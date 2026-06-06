@@ -4,7 +4,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -20,11 +19,6 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-
-try:
-    from google.cloud import vision
-except ImportError:  # pragma: no cover
-    vision = None
 
 try:
     import google.generativeai as genai
@@ -238,8 +232,6 @@ def usage_bucket(data: dict[str, Any], day: str) -> dict[str, Any]:
     bucket.setdefault("pdf_downloads", 0)
     bucket.setdefault("portal_sessions", 0)
     bucket.setdefault("local_text_pdf_scans", 0)
-    bucket.setdefault("local_ocr_scans", 0)
-    bucket.setdefault("vision_scans", 0)
     bucket.setdefault("errors", 0)
     return bucket
 
@@ -282,10 +274,6 @@ def record_usage(event_type: str, **details: Any) -> None:
         bucket["portal_sessions"] += 1
     elif event_type == "local_text_pdf_scan":
         bucket["local_text_pdf_scans"] += 1
-    elif event_type == "local_ocr_scan":
-        bucket["local_ocr_scans"] += 1
-    elif event_type == "vision_scan":
-        bucket["vision_scans"] += 1
     elif event_type == "error":
         bucket["errors"] += 1
 
@@ -352,39 +340,6 @@ def enforce_gemini_rate_limit() -> None:
 
 def gemini_api_key() -> str | None:
     return os.getenv("GEMINI_API_KEY")
-
-
-def google_vision_configured() -> bool:
-    return bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or os.getenv("GOOGLE_CLOUD_PROJECT"))
-
-
-def tesseract_command() -> str | None:
-    configured = os.getenv("TESSERACT_CMD")
-    if configured and Path(configured).exists():
-        return configured
-    discovered = shutil.which("tesseract")
-    if discovered:
-        return discovered
-    for candidate in [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-    ]:
-        if Path(candidate).exists():
-            return candidate
-    return None
-
-
-def local_ocr_available() -> bool:
-    return bool(tesseract_command() or tesseract_js_available())
-
-
-def tesseract_js_available() -> bool:
-    root = Path(__file__).resolve().parent.parent
-    return bool(
-        shutil.which("node")
-        and (root / "scripts" / "free-ocr.js").exists()
-        and (root / "node_modules" / "tesseract.js").exists()
-    )
 
 
 def save_backend_env(updates: dict[str, str]) -> None:
@@ -468,64 +423,6 @@ def ai_document_parts(file_bytes: bytes, content_type: str) -> list[dict[str, An
     return [{"mime_type": content_type or "application/octet-stream", "data": file_bytes}]
 
 
-def run_tesseract(image_bytes: bytes, suffix: str) -> str:
-    command = tesseract_command()
-    use_tesseract_js = not command and tesseract_js_available()
-    if not command and not use_tesseract_js:
-        raise HTTPException(status_code=500, detail="Free local OCR is not installed. Run npm install, or install Tesseract OCR, or add optional Gemini cloud extraction.")
-    temp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(image_bytes)
-            temp_path = temp_file.name
-        languages = os.getenv("TESSERACT_LANGS", "eng+nep")
-        if use_tesseract_js:
-            script_path = Path(__file__).resolve().parent.parent / "scripts" / "free-ocr.js"
-            result = subprocess.run(["node", str(script_path), temp_path, languages], capture_output=True, text=True, timeout=90)
-        else:
-            args = [command, temp_path, "stdout", "-l", languages]
-            result = subprocess.run(args, capture_output=True, text=True, timeout=45)
-            if result.returncode != 0 and languages != "eng":
-                result = subprocess.run([command, temp_path, "stdout", "-l", "eng"], capture_output=True, text=True, timeout=45)
-        if result.returncode != 0:
-            raise HTTPException(status_code=502, detail=f"Free local OCR failed: {result.stderr.strip() or 'Tesseract returned no text.'}")
-        return result.stdout.strip()
-    except subprocess.TimeoutExpired as exc:
-        raise HTTPException(status_code=504, detail="Free local OCR took too long. Try a clearer cropped image.") from exc
-    finally:
-        if temp_path:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
-
-
-def extract_text_with_local_ocr(file_bytes: bytes, content_type: str, filename: str | None = None) -> str:
-    if content_type == "application/pdf":
-        embedded_text = extract_text_from_pdf(file_bytes)
-        if embedded_text:
-            return embedded_text
-        if fitz is None:
-            raise HTTPException(status_code=500, detail="Free scanned-PDF OCR needs PyMuPDF installed. Run pip install -r backend/requirements.txt.")
-        texts = []
-        try:
-            pdf = fitz.open(stream=file_bytes, filetype="pdf")
-            for page in pdf[:3]:
-                pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                texts.append(run_tesseract(pixmap.tobytes("png"), ".png"))
-            pdf.close()
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Free scanned-PDF OCR failed: {exc}") from exc
-        return "\n".join(text for text in texts if text.strip()).strip()
-
-    suffix = Path(filename or "").suffix
-    if not suffix:
-        suffix = ".jpg"
-    return run_tesseract(file_bytes, suffix)
-
-
 def gemini_model_name() -> str:
     return os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
@@ -583,47 +480,6 @@ def extract_with_gemini_passport_packet(uploaded_files: list[dict[str, Any]]) ->
         if "quota" in message or "resource_exhausted" in message or "429" in message:
             raise HTTPException(status_code=429, detail="Gemini rate limit reached. Please wait and try again.") from exc
         raise HTTPException(status_code=502, detail=f"Gemini passport extraction failed: {exc}") from exc
-
-
-def extract_text_with_vision(file_bytes: bytes, content_type: str) -> str:
-    if demo_data_enabled():
-        return mock_ocr_text()
-    if content_type == "application/pdf":
-        embedded_text = extract_text_from_pdf(file_bytes)
-        if embedded_text:
-            return embedded_text
-    if vision is None:
-        raise HTTPException(status_code=500, detail="Google Vision SDK is not installed.")
-    if not google_vision_configured():
-        raise HTTPException(status_code=500, detail="Google Vision credentials are not configured. Add GEMINI_API_KEY for Gemini document extraction, or configure GOOGLE_APPLICATION_CREDENTIALS for Google Vision OCR.")
-    try:
-        client = vision.ImageAnnotatorClient()
-        if content_type == "application/pdf":
-            input_config = vision.InputConfig(content=file_bytes, mime_type="application/pdf")
-            feature = vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
-            request = vision.AnnotateFileRequest(input_config=input_config, features=[feature], pages=[1, 2, 3])
-            result = client.batch_annotate_files(requests=[request])
-            texts = []
-            for response in result.responses[0].responses:
-                if response.error.message:
-                    raise RuntimeError(response.error.message)
-                if response.full_text_annotation.text:
-                    texts.append(response.full_text_annotation.text)
-            return "\n".join(texts)
-        result = client.text_detection(image=vision.Image(content=file_bytes))
-    except Exception as exc:
-        message = str(exc).lower()
-        if "quota" in message or "resource_exhausted" in message or "429" in message:
-            raise HTTPException(status_code=429, detail="Google Vision free quota appears to be exhausted. Please try again later.")
-        if "default credentials" in message or "could not automatically determine credentials" in message:
-            raise HTTPException(status_code=500, detail="Google Vision credentials are not configured. Text-based PDFs can be read locally, but scanned PDFs and images need Google Vision OCR.")
-        raise HTTPException(status_code=502, detail=f"Google Vision OCR failed: {exc}") from exc
-    if result.error.message:
-        detail = result.error.message
-        if "quota" in detail.lower():
-            raise HTTPException(status_code=429, detail="Google Vision free quota appears to be exhausted. Please try again later.")
-        raise HTTPException(status_code=502, detail=f"Google Vision OCR failed: {detail}")
-    return result.full_text_annotation.text if result.full_text_annotation else ""
 
 
 def gemini_generate(prompt: str, raw_text: str) -> str:

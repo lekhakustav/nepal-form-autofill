@@ -2,7 +2,6 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "start:local": "powershell -ExecutionPolicy Bypass -File .\\start-app.ps1",
-    "install:free-ocr": "powershell -ExecutionPolicy Bypass -File .\\scripts\\install-free-ocr.ps1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
@@ -11,7 +10,6 @@
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "tesseract.js": "^6.0.1",
     "vite": "^7.0.0"
   },
   "devDependencies": {
