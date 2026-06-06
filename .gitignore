@@ -1,0 +1,41 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+!backend/.env.production.example
+backend/usage-log.json
+
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+
+# Build outputs and generated artifacts
+dist/
+.tmp-vite-build/
+release/
+
+# Local browser profiles
+.portal-chrome-profile/
+.portal-chrome-profiles/
+.extension-chrome-profile/
+
+# Logs and tunnel output
+*.log
+*-error.log
+cf-*.log
+lt-*.log
+ngrok-*.log
+frontend-share*.log
+
+# OCR language files downloaded locally
+*.traineddata
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
