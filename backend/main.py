@@ -142,11 +142,11 @@ CITIZENSHIP_PROMPT = """The following is raw OCR text from a Nepali Nagarikta (c
 
 NID_PROMPT = """The following is raw OCR text from a Nepali National Identity Card (NID). Parse and return only a JSON object with: full_name_nepali, full_name_english, date_of_birth, gender, permanent_address (district, municipality, ward), nid_number, issued_district (if visible), issued_date (if visible), expiry_date (if visible), father_name, mother_name, spouse_name (if present), blood_group (if present). Set missing fields to null. Return only JSON."""
 
-DOCUMENT_EXTRACTION_PROMPT = """Read this Nepali ID document image or PDF visually and return only a JSON object.
-Detect whether it is a Nepali Nagarikta citizenship card or a Nepali National Identity Card.
-Use the exact visible values from the document whenever possible.
-Focus on names, identity numbers, dates, gender, address, issued district, father/mother/grandfather names, spouse, and blood group.
-If a scanned PDF is represented by page images, combine the visible data across pages.
+PASSPORT_PACKET_EXTRACTION_PROMPT = """Read all attached passport application source documents visually and return only one JSON object.
+The files may include Nepali citizenship, NID, previous passport, supporting identity documents, or searchable PDF text.
+Use exact visible values whenever possible. Combine data across all files.
+Normalize dates exactly as visible when you cannot confidently convert between B.S. and A.D.
+Focus on the values needed to autofill the Nepal ePassport online pre-enrollment form.
 Return this shape:
 {
   "id_type": "CITIZENSHIP" or "NID",
@@ -165,6 +165,12 @@ Return this shape:
   "grandfather_name": string or null,
   "spouse_name": string or null,
   "blood_group": string or null,
+  "passport_type": string or null,
+  "application_type": string or null,
+  "birth_place": string or null,
+  "old_passport_number": string or null,
+  "phone": string or null,
+  "email": string or null,
   "raw_text": string or null
 }
 Return only JSON. Do not invent missing values."""
@@ -345,7 +351,7 @@ def enforce_gemini_rate_limit() -> None:
 
 
 def gemini_api_key() -> str | None:
-    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    return os.getenv("GEMINI_API_KEY")
 
 
 def google_vision_configured() -> bool:
@@ -394,9 +400,7 @@ def save_backend_env(updates: dict[str, str]) -> None:
     existing.update({key: value for key, value in updates.items() if value is not None})
     ordered_keys = [
         "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
         "GEMINI_MODEL",
-        "GOOGLE_APPLICATION_CREDENTIALS",
         "ALLOWED_ORIGINS",
         "GEMINI_REQUESTS_PER_MINUTE",
         "USE_MOCK_AI",
@@ -523,61 +527,52 @@ def extract_text_with_local_ocr(file_bytes: bytes, content_type: str, filename: 
 
 
 def gemini_model_name() -> str:
-    return os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    return os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 
-def extract_with_gemini_document(file_bytes: bytes, content_type: str, filename: str | None = None) -> dict[str, Any]:
+def extract_with_gemini_passport_packet(uploaded_files: list[dict[str, Any]]) -> dict[str, Any]:
     if demo_data_enabled():
-        return {**mock_citizenship_json(), "id_type": "CITIZENSHIP", "raw_text": mock_ocr_text()}
+        return {
+            **mock_citizenship_json(),
+            "id_type": "CITIZENSHIP",
+            "passport_type": "Ordinary 34 pages",
+            "application_type": "New",
+            "birth_place": "Kathmandu",
+            "phone": "9800000000",
+            "email": "sita@example.com",
+            "raw_text": mock_ocr_text(),
+        }
     if genai is None:
         raise HTTPException(status_code=500, detail="Gemini SDK is not installed.")
     api_key = gemini_api_key()
     if not api_key:
-        raise HTTPException(status_code=500, detail="Add GEMINI_API_KEY or GOOGLE_API_KEY to backend/.env to extract real data from scanned images and PDFs.")
+        raise HTTPException(status_code=500, detail="Add GEMINI_API_KEY to backend/.env to extract passport details from photos and PDFs.")
 
     enforce_gemini_rate_limit()
-    suffix = Path(filename or "").suffix
-    if not suffix:
-        suffix = ".pdf" if content_type == "application/pdf" else ".jpg"
-
-    temp_path = None
-    uploaded_file = None
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(gemini_model_name())
-        inline_error: Exception | None = None
-        try:
-            response = model.generate_content(
-                [DOCUMENT_EXTRACTION_PROMPT, *ai_document_parts(file_bytes, content_type)],
-                generation_config={"temperature": 0, "response_mime_type": "application/json"},
-            )
-            record_usage("gemini_call", model=gemini_model_name(), source="inline_document_extraction", **response_usage_metadata(response))
-            extracted = parse_json_response(response.text or "")
-            extracted["id_type"] = normalize_id_type(extracted.get("id_type") or heuristic_detect_id_type(extracted.get("raw_text") or ""))
-            return extracted
-        except HTTPException:
-            raise
-        except Exception as exc:
-            inline_error = exc
-            category = classify_ai_error(exc)
-            record_usage("error", source="inline_document_extraction", category=category, message=str(exc)[:220])
-            if category in {"rate_limit", "auth"}:
-                raise
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(file_bytes)
-            temp_path = temp_file.name
-        uploaded_file = genai.upload_file(temp_path, mime_type=content_type)
-        while getattr(getattr(uploaded_file, "state", None), "name", "") == "PROCESSING":
-            time.sleep(1)
-            uploaded_file = genai.get_file(uploaded_file.name)
-        if getattr(getattr(uploaded_file, "state", None), "name", "") == "FAILED":
-            raise HTTPException(status_code=502, detail="Gemini could not process this uploaded file.")
+        parts: list[Any] = [PASSPORT_PACKET_EXTRACTION_PROMPT]
+        for index, uploaded in enumerate(uploaded_files, start=1):
+            filename = uploaded["filename"]
+            content_type = uploaded["content_type"]
+            file_bytes = uploaded["bytes"]
+            embedded_text = extract_text_from_pdf(file_bytes) if content_type == "application/pdf" else ""
+            if embedded_text:
+                parts.append(f"\n\nSEARCHABLE PDF TEXT FROM FILE {index} ({filename}):\n{embedded_text[:12000]}")
+            for part in ai_document_parts(file_bytes, content_type):
+                parts.append(part)
         response = model.generate_content(
-            [DOCUMENT_EXTRACTION_PROMPT, uploaded_file],
+            parts,
             generation_config={"temperature": 0, "response_mime_type": "application/json"},
         )
-        record_usage("gemini_call", model=gemini_model_name(), source="document_extraction", **response_usage_metadata(response))
+        record_usage(
+            "gemini_call",
+            model=gemini_model_name(),
+            source="passport_packet_extraction",
+            file_count=len(uploaded_files),
+            **response_usage_metadata(response),
+        )
         extracted = parse_json_response(response.text or "")
         extracted["id_type"] = normalize_id_type(extracted.get("id_type") or heuristic_detect_id_type(extracted.get("raw_text") or ""))
         return extracted
@@ -587,18 +582,7 @@ def extract_with_gemini_document(file_bytes: bytes, content_type: str, filename:
         message = str(exc).lower()
         if "quota" in message or "resource_exhausted" in message or "429" in message:
             raise HTTPException(status_code=429, detail="Gemini rate limit reached. Please wait and try again.") from exc
-        raise HTTPException(status_code=502, detail=f"Gemini document extraction failed: {exc}") from exc
-    finally:
-        if uploaded_file is not None:
-            try:
-                genai.delete_file(uploaded_file.name)
-            except Exception:
-                pass
-        if temp_path:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
+        raise HTTPException(status_code=502, detail=f"Gemini passport extraction failed: {exc}") from exc
 
 
 def extract_text_with_vision(file_bytes: bytes, content_type: str) -> str:
@@ -805,23 +789,25 @@ def unified_master(id_type: str, data: dict[str, Any]) -> dict[str, Any]:
         "grandfather_name": data.get("grandfather_name") if id_type == "CITIZENSHIP" else None,
         "spouse_name": data.get("spouse_name"),
         "blood_group": data.get("blood_group"),
+        "passport_type": data.get("passport_type"),
+        "application_type": data.get("application_type"),
+        "birth_place": data.get("birth_place"),
+        "old_passport_number": data.get("old_passport_number"),
+        "phone": data.get("phone"),
+        "email": data.get("email"),
     })
 
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    google_credentials = google_vision_configured()
     gemini_key = bool(gemini_api_key())
-    local_ocr = local_ocr_available()
-    ocr_mode = "ai_document_extraction" if gemini_key else "local_tesseract_ocr" if local_ocr else "google_vision_configured" if google_credentials else "local_text_pdf_only"
     return {
         "status": "ok",
-        "ocr": ocr_mode,
+        "ocr": "gemini_passport_extraction" if gemini_key else "gemini_key_required",
         "ai_scan": "configured" if gemini_key else "not_configured",
-        "gemini": "configured" if gemini_key else "heuristic_parser",
-        "local_ocr": "configured" if local_ocr else "missing_tesseract",
+        "gemini": "configured" if gemini_key else "missing_api_key",
         "model": gemini_model_name() if gemini_key else None,
-        "note": "AI scan is primary for photos and scanned PDFs when GEMINI_API_KEY/GOOGLE_API_KEY is configured. Local OCR is only a fallback.",
+        "note": "Passport photo/PDF extraction uses Gemini locally through this backend. Add GEMINI_API_KEY to backend/.env before scanning real documents.",
     }
 
 
@@ -859,7 +845,7 @@ def save_gemini_settings(payload: GeminiSettingsRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Paste a Gemini API key first.")
     if not (api_key.startswith("AIza") or len(api_key) >= 30):
         raise HTTPException(status_code=400, detail="This does not look like a valid Gemini API key.")
-    model = (payload.model or gemini_model_name()).strip() or "gemini-2.5-flash"
+    model = (payload.model or gemini_model_name()).strip() or "gemini-3.5-flash"
     os.environ["GEMINI_API_KEY"] = api_key
     os.environ["GEMINI_MODEL"] = model
     save_backend_env({
@@ -869,53 +855,43 @@ def save_gemini_settings(payload: GeminiSettingsRequest) -> dict[str, Any]:
         "GEMINI_REQUESTS_PER_MINUTE": os.getenv("GEMINI_REQUESTS_PER_MINUTE", "15"),
         "USE_MOCK_AI": os.getenv("USE_MOCK_AI", "false"),
     })
-    return {"status": "saved", "ocr": "gemini_document_extraction", "model": model}
+    return {"status": "saved", "ocr": "gemini_passport_extraction", "model": model}
 
 
 @app.post("/api/extract")
-async def extract(file: UploadFile = File(...), form_type: str = Form(...)) -> dict[str, Any]:
-    if form_type not in FORM_TITLES:
-        raise HTTPException(status_code=400, detail="Unknown form type.")
-    content_type = file.content_type or ""
-    is_pdf = content_type == "application/pdf" or file.filename.lower().endswith(".pdf")
-    is_image = content_type.startswith("image/")
-    if not is_image and not is_pdf:
-        raise HTTPException(status_code=400, detail="Please upload an image or PDF file.")
+async def extract(files: list[UploadFile] = File(...), form_type: str = Form(...)) -> dict[str, Any]:
+    if form_type != "passport":
+        raise HTTPException(status_code=400, detail="Passport is the only supported form in this local autofill build.")
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload at least one passport source photo or PDF.")
+    if not gemini_api_key() and not demo_data_enabled():
+        raise HTTPException(status_code=500, detail="Add GEMINI_API_KEY to backend/.env before extracting passport details from photos or PDFs.")
 
-    file_bytes = await file.read()
-    if len(file_bytes) > 12 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File is too large. Please upload an image or PDF under 12 MB.")
+    uploaded_files: list[dict[str, Any]] = []
+    total_bytes = 0
+    for upload in files:
+        filename = upload.filename or "uploaded-document"
+        content_type = upload.content_type or ""
+        is_pdf = content_type == "application/pdf" or filename.lower().endswith(".pdf")
+        is_image = content_type.startswith("image/")
+        if not is_image and not is_pdf:
+            raise HTTPException(status_code=400, detail=f"{filename} is not an image or PDF file.")
+        file_bytes = await upload.read()
+        if len(file_bytes) > 12 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"{filename} is too large. Upload each image or PDF under 12 MB.")
+        total_bytes += len(file_bytes)
+        if total_bytes > 32 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="The passport document packet is too large. Keep the combined upload under 32 MB.")
+        uploaded_files.append({
+            "filename": filename,
+            "content_type": "application/pdf" if is_pdf else content_type,
+            "bytes": file_bytes,
+        })
 
-    processing_type = "application/pdf" if is_pdf else content_type
-    raw_text = extract_text_from_pdf(file_bytes) if is_pdf else ""
-    if raw_text.strip():
-        record_usage("local_text_pdf_scan", form_type=form_type)
-        id_type = normalize_id_type(gemini_generate(DETECTION_PROMPT, raw_text))
-        extraction_prompt = CITIZENSHIP_PROMPT if id_type == "CITIZENSHIP" else NID_PROMPT
-        extracted = parse_json_response(gemini_generate(extraction_prompt, raw_text))
-    elif gemini_api_key():
-        record_usage("ocr_scan", form_type=form_type, provider="ai_gemini")
-        extracted = extract_with_gemini_document(file_bytes, processing_type, file.filename)
-        id_type = normalize_id_type(extracted.get("id_type") or "")
-        raw_text = extracted.get("raw_text") or "Parsed directly from image/PDF with AI document extraction."
-    elif local_ocr_available():
-        record_usage("local_ocr_scan", form_type=form_type, provider="tesseract")
-        raw_text = extract_text_with_local_ocr(file_bytes, processing_type, file.filename)
-        if not raw_text.strip():
-            raise HTTPException(status_code=422, detail="Local OCR found no readable text. Add an AI key for stronger photo extraction or try a clearer cropped image.")
-        id_type = normalize_id_type(gemini_generate(DETECTION_PROMPT, raw_text))
-        extraction_prompt = CITIZENSHIP_PROMPT if id_type == "CITIZENSHIP" else NID_PROMPT
-        extracted = parse_json_response(gemini_generate(extraction_prompt, raw_text))
-    elif google_vision_configured():
-        record_usage("vision_scan", form_type=form_type)
-        raw_text = extract_text_with_vision(file_bytes, processing_type)
-        if not raw_text.strip():
-            raise HTTPException(status_code=422, detail="No readable text was found in this file.")
-        id_type = normalize_id_type(gemini_generate(DETECTION_PROMPT, raw_text))
-        extraction_prompt = CITIZENSHIP_PROMPT if id_type == "CITIZENSHIP" else NID_PROMPT
-        extracted = parse_json_response(gemini_generate(extraction_prompt, raw_text))
-    else:
-        raise HTTPException(status_code=500, detail="No OCR engine is ready. Install free Tesseract OCR, or add optional Gemini/Google Vision credentials.")
+    record_usage("ocr_scan", form_type=form_type, provider="gemini_passport_packet", file_count=len(uploaded_files))
+    extracted = extract_with_gemini_passport_packet(uploaded_files)
+    id_type = normalize_id_type(extracted.get("id_type") or "")
+    raw_text = extracted.get("raw_text") or "Parsed from uploaded passport source files with Gemini."
     master = unified_master(id_type, extracted)
     return {"id_type": id_type, "raw_text": raw_text, "master_data": master}
 
