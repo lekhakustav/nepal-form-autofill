@@ -2,7 +2,6 @@ import io
 import json
 import os
 import re
-import shutil
 import subprocess
 import time
 from collections import deque
@@ -294,39 +293,6 @@ def classify_ai_error(exc: Exception) -> str:
     if "api key" in message or "permission" in message or "unauthenticated" in message:
         return "auth"
     return "unknown"
-
-
-def cloud_quota_status() -> dict[str, Any]:
-    gcloud_path = shutil.which("gcloud")
-    project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT")
-    if not gcloud_path:
-        return {
-            "connected": False,
-            "tool": "gcloud_missing",
-            "project": project,
-            "message": "Install and sign in to Google Cloud CLI to read Cloud Quotas from this PC.",
-        }
-    try:
-        result = subprocess.run(
-            ["gcloud", "config", "get-value", "project"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        configured_project = result.stdout.strip() if result.returncode == 0 else ""
-        return {
-            "connected": bool(configured_project or project),
-            "tool": "gcloud",
-            "project": configured_project or project,
-            "message": "Google Cloud CLI is available. Use Google AI Studio links for Gemini free-tier RPM/TPM/RPD, and Cloud Console for billable quotas.",
-        }
-    except (subprocess.SubprocessError, OSError):
-        return {
-            "connected": False,
-            "tool": "gcloud_error",
-            "project": project,
-            "message": "Google Cloud CLI is installed but not responding.",
-        }
 
 
 def enforce_gemini_rate_limit() -> None:
@@ -683,12 +649,10 @@ def usage() -> dict[str, Any]:
             "max_upload_mb": 12,
             "portal_watch_seconds": 300,
         },
-        "cloud": cloud_quota_status(),
         "links": {
             "ai_studio_rate_limits": "https://aistudio.google.com/app/rate-limit",
             "ai_studio_usage": "https://aistudio.google.com/app/usage",
             "ai_studio_spend": "https://aistudio.google.com/app/spend",
-            "cloud_billing": "https://console.cloud.google.com/billing",
         },
         "recent_events": data.get("events", [])[-10:],
     }

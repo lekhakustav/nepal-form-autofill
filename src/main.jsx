@@ -10,7 +10,6 @@ import {
   ExternalLink,
   FileScan,
   FileText,
-  Gauge,
   IdCard,
   Loader2,
   LockKeyhole,
@@ -300,7 +299,6 @@ function formatNumber(value) {
 function UsagePanel({ usage, onRefresh }) {
   const data = usage?.usage || {};
   const limits = usage?.limits || {};
-  const cloud = usage?.cloud || {};
   const links = usage?.links || {};
   const rpmLimit = limits.local_gemini_rpm_limit || 0;
   const rpmUsed = limits.local_gemini_rpm_used || 0;
@@ -325,15 +323,10 @@ function UsagePanel({ usage, onRefresh }) {
         <span><strong>{formatNumber(data.portal_sessions)}</strong> portal sessions</span>
         <span><strong>{rpmText}</strong> local RPM guard</span>
       </div>
-      <div className={`cloud-status ${cloud.connected ? "ready" : ""}`}>
-        <Gauge size={18} />
-        <span>{cloud.connected ? `Cloud connected${cloud.project ? `: ${cloud.project}` : ""}` : cloud.message || "Cloud quota not connected"}</span>
-      </div>
       <div className="usage-links">
         {links.ai_studio_rate_limits && <a href={links.ai_studio_rate_limits} target="_blank" rel="noreferrer"><ExternalLink size={15} /> AI Studio limits</a>}
         {links.ai_studio_usage && <a href={links.ai_studio_usage} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Usage</a>}
         {links.ai_studio_spend && <a href={links.ai_studio_spend} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Spend</a>}
-        {links.cloud_billing && <a href={links.cloud_billing} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Billing</a>}
       </div>
     </div>
   );
