@@ -170,6 +170,11 @@ Return only JSON. Do not invent missing values."""
 
 gemini_requests = deque()
 USAGE_LOG_PATH = Path(__file__).resolve().parent / "usage-log.json"
+MAX_UPLOAD_FILES = 6
+MAX_FILE_BYTES = 12 * 1024 * 1024
+MAX_PACKET_BYTES = 32 * 1024 * 1024
+DEFAULT_GEMINI_RPM = 15
+MAX_GEMINI_RPM = 60
 
 
 class PdfRequest(BaseModel):
@@ -295,11 +300,29 @@ def classify_ai_error(exc: Exception) -> str:
     return "unknown"
 
 
+def int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def safe_ai_error_message(exc: Exception, fallback: str) -> str:
+    category = classify_ai_error(exc)
+    if category == "rate_limit":
+        return "Gemini rate limit or quota was reached. Please wait and try again."
+    if category == "auth":
+        return "Gemini rejected the configured API key. Check backend/.env and try again."
+    return fallback
+
+
 def enforce_gemini_rate_limit() -> None:
     now = time.time()
     while gemini_requests and now - gemini_requests[0] > 60:
         gemini_requests.popleft()
-    if len(gemini_requests) >= int(os.getenv("GEMINI_REQUESTS_PER_MINUTE", "15")):
+    rpm_limit = int_env("GEMINI_REQUESTS_PER_MINUTE", DEFAULT_GEMINI_RPM, 1, MAX_GEMINI_RPM)
+    if len(gemini_requests) >= rpm_limit:
         raise HTTPException(status_code=429, detail="Gemini rate limit reached. Please wait a minute and try again.")
     gemini_requests.append(now)
 
@@ -442,10 +465,9 @@ def extract_with_gemini_passport_packet(uploaded_files: list[dict[str, Any]]) ->
     except HTTPException:
         raise
     except Exception as exc:
-        message = str(exc).lower()
-        if "quota" in message or "resource_exhausted" in message or "429" in message:
-            raise HTTPException(status_code=429, detail="Gemini rate limit reached. Please wait and try again.") from exc
-        raise HTTPException(status_code=502, detail=f"Gemini passport extraction failed: {exc}") from exc
+        category = classify_ai_error(exc)
+        status_code = 429 if category == "rate_limit" else 401 if category == "auth" else 502
+        raise HTTPException(status_code=status_code, detail=safe_ai_error_message(exc, "Gemini passport extraction failed. Please try again with clearer files.")) from exc
 
 
 def gemini_generate(prompt: str, raw_text: str) -> str:
@@ -468,10 +490,9 @@ def gemini_generate(prompt: str, raw_text: str) -> str:
         record_usage("gemini_call", model=gemini_model_name(), source="text_parse", **response_usage_metadata(response))
         return response.text.strip()
     except Exception as exc:
-        message = str(exc).lower()
-        if "quota" in message or "resource_exhausted" in message or "429" in message:
-            raise HTTPException(status_code=429, detail="Gemini free-tier rate limit reached. Please wait and try again.")
-        raise HTTPException(status_code=502, detail=f"Gemini parsing failed: {exc}") from exc
+        category = classify_ai_error(exc)
+        status_code = 429 if category == "rate_limit" else 401 if category == "auth" else 502
+        raise HTTPException(status_code=status_code, detail=safe_ai_error_message(exc, "Gemini parsing failed. Please try again.")) from exc
 
 
 def parse_json_response(text: str) -> dict[str, Any]:
@@ -638,7 +659,7 @@ def usage() -> dict[str, Any]:
     data = read_usage_log()
     today = usage_day()
     today_usage = usage_bucket(data, today)
-    rpm_limit = int(os.getenv("GEMINI_REQUESTS_PER_MINUTE", "15"))
+    rpm_limit = int_env("GEMINI_REQUESTS_PER_MINUTE", DEFAULT_GEMINI_RPM, 1, MAX_GEMINI_RPM)
     recent_requests = len([request_time for request_time in gemini_requests if time.time() - request_time <= 60])
     return {
         "today": today,
@@ -646,7 +667,9 @@ def usage() -> dict[str, Any]:
         "limits": {
             "local_gemini_rpm_limit": rpm_limit,
             "local_gemini_rpm_used": recent_requests,
-            "max_upload_mb": 12,
+            "max_upload_files": MAX_UPLOAD_FILES,
+            "max_upload_mb": MAX_FILE_BYTES // (1024 * 1024),
+            "max_packet_mb": MAX_PACKET_BYTES // (1024 * 1024),
             "portal_watch_seconds": 300,
         },
         "links": {
@@ -684,6 +707,8 @@ async def extract(files: list[UploadFile] = File(...), form_type: str = Form(...
         raise HTTPException(status_code=400, detail="Passport is the only supported form in this local autofill build.")
     if not files:
         raise HTTPException(status_code=400, detail="Upload at least one passport source photo or PDF.")
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(status_code=413, detail=f"Upload no more than {MAX_UPLOAD_FILES} passport source files at once.")
     if not gemini_api_key() and not demo_data_enabled():
         raise HTTPException(status_code=500, detail="Add GEMINI_API_KEY to backend/.env before extracting passport details from photos or PDFs.")
 
@@ -697,11 +722,11 @@ async def extract(files: list[UploadFile] = File(...), form_type: str = Form(...
         if not is_image and not is_pdf:
             raise HTTPException(status_code=400, detail=f"{filename} is not an image or PDF file.")
         file_bytes = await upload.read()
-        if len(file_bytes) > 12 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail=f"{filename} is too large. Upload each image or PDF under 12 MB.")
+        if len(file_bytes) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail=f"{filename} is too large. Upload each image or PDF under {MAX_FILE_BYTES // (1024 * 1024)} MB.")
         total_bytes += len(file_bytes)
-        if total_bytes > 32 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="The passport document packet is too large. Keep the combined upload under 32 MB.")
+        if total_bytes > MAX_PACKET_BYTES:
+            raise HTTPException(status_code=413, detail=f"The passport document packet is too large. Keep the combined upload under {MAX_PACKET_BYTES // (1024 * 1024)} MB.")
         uploaded_files.append({
             "filename": filename,
             "content_type": "application/pdf" if is_pdf else content_type,
@@ -711,9 +736,8 @@ async def extract(files: list[UploadFile] = File(...), form_type: str = Form(...
     record_usage("ocr_scan", form_type=form_type, provider="gemini_passport_packet", file_count=len(uploaded_files))
     extracted = extract_with_gemini_passport_packet(uploaded_files)
     id_type = normalize_id_type(extracted.get("id_type") or "")
-    raw_text = extracted.get("raw_text") or "Parsed from uploaded passport source files with Gemini."
     master = unified_master(id_type, extracted)
-    return {"id_type": id_type, "raw_text": raw_text, "master_data": master}
+    return {"id_type": id_type, "master_data": master}
 
 
 @app.post("/api/pdf")

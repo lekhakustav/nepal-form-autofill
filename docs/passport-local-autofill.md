@@ -10,7 +10,17 @@ This build is intentionally passport-only. The local app should turn a packet of
 - Backend requires `GEMINI_API_KEY` unless explicit demo mode is enabled.
 - Backend defaults to `GEMINI_MODEL=gemini-3.5-flash`.
 - Gemini receives all uploaded image/PDF inputs as one packet and returns one normalized applicant profile.
+- The API returns normalized field values only; raw extracted document text is not returned to the browser.
 - Google Vision OCR is not part of the intended path.
+
+## Limits And Secret Handling
+
+- `GEMINI_REQUESTS_PER_MINUTE` is clamped between 1 and 60; invalid values fall back to 15.
+- A packet can contain at most 6 files.
+- Each file can be at most 12 MB.
+- The combined packet can be at most 32 MB.
+- Gemini provider errors are converted to short local messages before being returned to the browser.
+- API keys must stay in ignored local env files or process environment and must never be committed.
 
 ## Portal Mechanism
 
