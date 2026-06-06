@@ -1,6 +1,6 @@
 # Nepal Form Autofill Backend
 
-FastAPI service for AI scanned image/PDF document extraction, local OCR fallback, unified master-data mapping, and ReportLab PDF generation.
+FastAPI service for local passport packet extraction, passport profile mapping, portal autofill launch, and ReportLab PDF generation.
 
 ## Local run
 
@@ -12,19 +12,13 @@ pip install -r requirements.txt
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-For best real scanned PDF/image extraction, create `backend/.env` from `backend/.env.example` and add:
+For real scanned PDF/image extraction, create `backend/.env` from `backend/.env.example` and add:
 
 ```powershell
 GEMINI_API_KEY=your-google-ai-studio-key
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.5-flash
 ```
 
-Local OCR can still be installed as backup:
+The `/api/extract` endpoint is passport-only in this build. Send repeated `files` form-data entries plus `form_type=passport`; the backend forwards the document packet to Gemini and returns one reviewed applicant profile.
 
-```powershell
-npm run install:free-ocr
-```
-
-Google Vision can also be used by setting `GOOGLE_APPLICATION_CREDENTIALS`, but it is optional. AI scan runs first when Gemini is configured.
-
-Uploaded files are not stored permanently. Gemini document extraction uses a short-lived temporary upload to Google's API and deletes the local temporary file immediately after processing.
+Google Vision OCR is not part of the intended flow. Uploaded files are processed in memory and are not stored permanently by this backend.
