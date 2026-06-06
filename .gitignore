@@ -39,3 +39,4 @@ frontend-share*.log
 Thumbs.db
 .vscode/
 .idea/
+.gstack/
