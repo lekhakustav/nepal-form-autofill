@@ -1,6 +1,8 @@
 # Nepal Form Autofill
 
-React + FastAPI app that auto-fills Nepali government and institutional forms from a Nepali citizenship card or National Identity Card photo.
+[![CI](https://github.com/lekhakustav/nepal-form-autofill/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lekhakustav/nepal-form-autofill/actions/workflows/ci.yml)
+
+AI-assisted Nepali form extraction and portal autofill for citizenship cards, NID, scanned PDFs, and portal workflows.
 
 ## Features
 
@@ -64,3 +66,14 @@ Backend on Railway:
 - `GOOGLE_APPLICATION_CREDENTIALS` or Google service account credentials configured in the Railway environment
 - `ALLOWED_ORIGINS=https://your-vercel-app.vercel.app`
 - `GEMINI_REQUESTS_PER_MINUTE=15`
+
+## Release workflow
+
+The repo uses `main` as the stable branch.
+
+1. Create a short-lived branch for a feature or fix.
+2. Keep the change focused and re-run the local build before merging.
+3. Merge to `main` only after the app and portal flow are verified locally.
+4. Tag releases from `main` when you want a public checkpoint.
+
+See [RELEASE_WORKFLOW.md](./RELEASE_WORKFLOW.md) for the simple branch flow.
