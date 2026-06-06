@@ -5,12 +5,12 @@ const childProcess = require("node:child_process");
 const { chromium } = require("playwright");
 
 const labelAliases = {
-  full_name_english: ["full name", "applicant name", "candidate name"],
+  full_name_english: ["full name", "applicant name", "candidate name", "name as in citizenship", "name as per citizenship", "applicant's full name"],
   first_name: ["first name", "given name"],
   middle_name: ["middle name"],
   last_name: ["last name", "surname", "family name"],
-  full_name_nepali: ["name in nepali", "nepali name"],
-  date_of_birth: ["date of birth", "dob", "birth date"],
+  full_name_nepali: ["name in nepali", "nepali name", "नाम थर", "नेपाली नाम"],
+  date_of_birth: ["date of birth", "dob", "birth date", "birth date bs", "date of birth b.s.", "जन्म मिति"],
   date_of_birth_ad: ["date of birth (a.d.)", "date of birth ad", "dob ad", "date of birth"],
   date_of_birth_bs: ["date of birth bs", "date of birth b.s.", "date of birth bs (nepali)", "date of birth nepali"],
   issued_date: ["issued date", "issue date", "date of issue", "citizenship issue date", "id issue date"],
@@ -19,30 +19,30 @@ const labelAliases = {
   expiry_date: ["expiry date", "expiration date", "valid until", "date of expiry"],
   expiry_date_ad: ["expiry date (a.d.)", "expiry date ad", "expiration date ad"],
   expiry_date_bs: ["expiry date bs", "expiry date b.s.", "expiration date bs"],
-  gender: ["gender", "sex"],
-  address_district: ["district"],
-  address_municipality: ["municipality", "rural municipality", "local level"],
-  address_ward: ["ward", "ward no", "ward number"],
-  id_number: ["citizenship", "citizenship number", "national id", "nid", "identity number"],
-  father_name: ["father name"],
+  gender: ["gender", "sex", "लिङ्ग"],
+  address_district: ["district", "permanent district", "address district", "जिल्ला"],
+  address_municipality: ["municipality", "rural municipality", "local level", "vdc", "पालिका", "गा.वि.स", "नगरपालिका"],
+  address_ward: ["ward", "ward no", "ward number", "वडा"],
+  id_number: ["citizenship", "citizenship number", "citizenship certificate no", "national id", "nid", "identity number", "नागरिकता"],
+  father_name: ["father name", "father's name", "बुबाको नाम"],
   father_first_name: ["father's first name", "father first name"],
   father_middle_name: ["father's middle name", "father middle name"],
   father_last_name: ["father's last name", "father last name", "father's surname", "father surname"],
-  mother_name: ["mother name"],
+  mother_name: ["mother name", "mother's name", "आमाको नाम"],
   mother_first_name: ["mother's first name", "mother first name"],
   mother_middle_name: ["mother's middle name", "mother middle name"],
   mother_last_name: ["mother's last name", "mother last name", "mother's surname", "mother surname"],
-  spouse_name: ["spouse", "husband", "wife"],
+  spouse_name: ["spouse", "husband", "wife", "spouse name", "पति", "पत्नी"],
   spouse_first_name: ["spouse first name", "husband first name", "wife first name"],
   spouse_last_name: ["spouse last name", "spouse surname", "husband surname", "wife surname"],
-  birth_place: ["place of birth", "birth place", "district/country if born abroad"],
+  birth_place: ["place of birth", "birth place", "birth district", "district/country if born abroad", "जन्म स्थान"],
   blood_group: ["blood", "blood group"],
-  phone: ["mobile", "phone", "contact"],
+  phone: ["mobile", "phone", "contact", "mobile number", "telephone", "फोन", "मोबाइल"],
   email: ["email", "e-mail"],
-  passport_type: ["passport type", "passport pages", "available passport types", "ordinary", "ordinary 34 pages", "ordinary 66 pages"],
+  passport_type: ["passport type", "passport pages", "available passport types", "type of passport", "ordinary", "ordinary 34 pages", "ordinary 66 pages"],
   passport_reference: ["application id", "application number", "application reference", "reference number", "registration number", "tracking number", "barcode", "passport status", "status"],
   application_reference: ["application id", "application number", "application reference", "reference number", "registration number", "tracking number", "barcode", "passport status", "status"],
-  application_type: ["application type"],
+  application_type: ["application type", "type of application", "application category", "new application", "renewal", "apply for passport"],
   license_category: ["category", "license category"],
   vehicle_type: ["vehicle"],
   account_type: ["account type"],
@@ -195,6 +195,43 @@ function scoreInput(input, key) {
   return score;
 }
 
+function optionTerms(key, value) {
+  const normalized = normalizeValue(value).toLowerCase();
+  const terms = [normalized];
+  const optionSynonyms = {
+    male: ["male", "m", "पुरुष"],
+    m: ["male", "m", "पुरुष"],
+    female: ["female", "f", "महिला"],
+    f: ["female", "f", "महिला"],
+    other: ["other", "others", "o", "अन्य"],
+    new: ["new", "fresh", "first", "first time", "नयाँ"],
+    renewal: ["renewal", "renew", "reissue"],
+    lost: ["lost"],
+    damaged: ["damaged"],
+  };
+  for (const term of optionSynonyms[normalized] || []) terms.push(term);
+  if (key === "passport_type") {
+    if (normalized.includes("34")) terms.push("ordinary 34 pages", "34 pages", "34");
+    if (normalized.includes("66")) terms.push("ordinary 66 pages", "66 pages", "66");
+    if (normalized.includes("ordinary")) terms.push("ordinary");
+  }
+  if (key === "application_type") {
+    if (normalized.includes("new")) terms.push("new", "fresh", "first time", "apply");
+    if (normalized.includes("renew")) terms.push("renewal", "renew", "reissue");
+  }
+  return [...new Set(terms.filter(Boolean))];
+}
+
+function optionTextMatches(key, value, optionText) {
+  const haystack = normalizeValue(optionText).toLowerCase();
+  if (!haystack) return false;
+  return optionTerms(key, value).some((term) => {
+    if (!term) return false;
+    if (term.length === 1) return haystack.split(/\W+/).includes(term);
+    return haystack.includes(term) || term.includes(haystack);
+  });
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -317,8 +354,8 @@ function findMatches(inputs, values) {
     for (const input of inputs) {
       if (used.has(input.index)) continue;
       let score = scoreInput(input, key);
-      if (input.type === "radio" && !radioOptionMatches(input, value)) score = 0;
-      if (input.type === "radio" && radioOptionMatches(input, value)) score += 100;
+      if (["radio", "checkbox"].includes(input.type) && !toggleOptionMatches(input, key, value)) score = 0;
+      if (["radio", "checkbox"].includes(input.type) && toggleOptionMatches(input, key, value)) score += 100;
       if (score > 0 && (!best || score > best.score)) best = { ...input, key, value, score };
     }
     if (!best || isSensitiveInput(best)) continue;
@@ -328,22 +365,9 @@ function findMatches(inputs, values) {
   return matches;
 }
 
-function radioOptionMatches(input, value) {
-  const expected = normalizeValue(value).toLowerCase();
-  const synonyms = {
-    male: ["male", "m"],
-    m: ["male", "m"],
-    female: ["female", "f"],
-    f: ["female", "f"],
-    other: ["other", "others", "o"]
-  };
-  const expectedWords = synonyms[expected] || [expected];
+function toggleOptionMatches(input, key, value) {
   const optionText = normalizeValue([input.value, input.radioText, input.label].join(" ")).toLowerCase();
-  return expectedWords.some((word) => {
-    if (!word) return false;
-    if (word.length === 1) return optionText.split(/\W+/).includes(word);
-    return optionText.includes(word);
-  });
+  return optionTextMatches(key, value, optionText);
 }
 
 function normalizeDateForInput(value) {
@@ -373,6 +397,30 @@ function parseDateParts(value) {
     };
   }
   return null;
+}
+
+function monthCandidates(month) {
+  const number = Number(month);
+  const monthNames = [
+    [],
+    ["january", "jan", "baishakh", "baisakh", "बैशाख"],
+    ["february", "feb", "jestha", "जेठ"],
+    ["march", "mar", "ashadh", "asad", "असार"],
+    ["april", "apr", "shrawan", "sawan", "श्रावण"],
+    ["may", "jestha", "bhadra", "भदौ"],
+    ["june", "jun", "ashadh", "ashwin", "असोज"],
+    ["july", "jul", "shrawan", "kartik", "कार्तिक"],
+    ["august", "aug", "bhadra", "mangsir", "मंसिर"],
+    ["september", "sep", "ashwin", "poush", "पुष"],
+    ["october", "oct", "kartik", "magh", "माघ"],
+    ["november", "nov", "mangsir", "falgun", "फागुन"],
+    ["december", "dec", "poush", "chaitra", "चैत"],
+  ];
+  return [
+    String(number),
+    String(month).padStart(2, "0"),
+    ...(monthNames[number] || []),
+  ].filter(Boolean);
 }
 
 function isDateKey(key) {
@@ -425,25 +473,38 @@ async function fillPassportServiceChoice(page, values, filledTargets) {
   return filled;
 }
 
-async function fillRadio(locator, value) {
-  const normalizedValue = normalize(normalizeValue(value));
-  const currentValue = normalize(normalizeValue(await locator.getAttribute("value").catch(() => "")));
-  const nearby = normalize(normalizeValue(await locator.evaluate((node) => {
+async function fillToggle(page, locator, key, value) {
+  const optionText = await locator.evaluate((node) => {
     const id = node.getAttribute("id");
     const label = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`)?.innerText || "" : "";
     const next = node.nextElementSibling?.innerText || node.nextElementSibling?.textContent || "";
-    const wrapper = node.closest("label, .mat-radio-button, .radio")?.innerText || "";
-    return label || next || wrapper;
-  }).catch(() => "")));
-  if (
-    currentValue.includes(normalizedValue) ||
-    normalizedValue.includes(currentValue) ||
-    nearby.includes(normalizedValue)
-  ) {
-    await locator.check({ timeout: 1200 }).catch(() => locator.click({ timeout: 1200 }));
+    const wrapper = node.closest("label, .mat-radio-button, .mat-checkbox, .radio, .checkbox")?.innerText || "";
+    return [node.getAttribute("value") || "", label, next, wrapper].join(" ");
+  }).catch(() => "");
+  if (!optionTextMatches(key, value, optionText)) return false;
+  if (await locator.isChecked().catch(() => false)) return true;
+
+  const checked = await locator.check({ timeout: 1200, force: true }).then(() => true).catch(() => false);
+  if (checked) return true;
+
+  const clickedLabel = await locator.evaluate((node) => {
+    const id = node.getAttribute("id");
+    const label = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+    const wrapper = node.closest("label, .mat-radio-button, .mat-checkbox, .radio, .checkbox");
+    const target = label || wrapper;
+    if (!target) return false;
+    target.click();
     return true;
-  }
-  return false;
+  }).catch(() => false);
+  if (clickedLabel && await locator.isChecked().catch(() => true)) return true;
+
+  return locator.evaluate((node) => {
+    if (!(node instanceof HTMLInputElement)) return false;
+    node.checked = true;
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    node.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }).catch(() => false);
 }
 
 async function valueLooksSet(locator, expectedValue) {
@@ -498,6 +559,47 @@ async function selectVisibleOption(page, selectors, value) {
   return false;
 }
 
+async function fillSelect(locator, key, value) {
+  const normalizedValue = isDateKey(key) ? normalizeDateForInput(value) : normalizeValue(value);
+  const exact = await locator
+    .selectOption({ label: normalizedValue }, { timeout: 700 })
+    .then(() => true)
+    .catch(() => locator.selectOption(normalizedValue, { timeout: 700 }).then(() => true).catch(() => false));
+  if (exact) return true;
+
+  const best = await locator.evaluate((node, args) => {
+    if (!(node instanceof HTMLSelectElement)) return null;
+    const options = Array.from(node.options).map((option) => ({
+      value: option.value,
+      label: option.label || option.textContent || "",
+      text: option.textContent || "",
+    }));
+    const terms = args.terms.map((term) => String(term || "").toLowerCase());
+    let bestOption = null;
+    let bestScore = 0;
+    for (const option of options) {
+      const haystack = `${option.value} ${option.label} ${option.text}`.toLowerCase();
+      let score = 0;
+      for (const term of terms) {
+        if (!term) continue;
+        if (haystack === term) score += 100;
+        else if (haystack.includes(term)) score += term.length;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestOption = option;
+      }
+    }
+    return bestScore ? bestOption : null;
+  }, { terms: optionTerms(key, normalizedValue) }).catch(() => null);
+
+  if (!best) return false;
+  return locator
+    .selectOption(best.value, { timeout: 700 })
+    .then(() => true)
+    .catch(() => locator.selectOption({ label: best.label }, { timeout: 700 }).then(() => true).catch(() => false));
+}
+
 async function fillCalendarWidget(page, locator, value) {
   const parts = parseDateParts(value);
   if (!parts) return false;
@@ -532,7 +634,9 @@ async function fillCalendarWidget(page, locator, value) {
 
   await selectVisibleOption(page, yearSelectors, parts.year) || await clickFirstVisible(page, yearSelectors, parts.year);
   await sleep(150);
-  await selectVisibleOption(page, monthSelectors, String(Number(parts.month))) || await selectVisibleOption(page, monthSelectors, parts.month) || await clickFirstVisible(page, monthSelectors, String(Number(parts.month)));
+  for (const monthCandidate of monthCandidates(parts.month)) {
+    if (await selectVisibleOption(page, monthSelectors, monthCandidate) || await clickFirstVisible(page, monthSelectors, monthCandidate)) break;
+  }
   await sleep(150);
   await clickFirstVisible(page, daySelectors, String(Number(parts.day)));
   await sleep(200);
@@ -565,12 +669,10 @@ async function fillPage(page, values, filledTargets) {
     const locator = inputLocator.nth(best.index);
     try {
       let didFill = false;
-      if (best.type === "radio") {
-        didFill = await fillRadio(locator, best.value);
+      if (best.type === "radio" || best.type === "checkbox") {
+        didFill = await fillToggle(page, locator, best.key, best.value);
       } else if (best.tag === "select") {
-        const value = isDateKey(best.key) ? normalizeDateForInput(best.value) : normalizeValue(best.value);
-        await locator.selectOption({ label: value }).catch(() => locator.selectOption(value));
-        didFill = true;
+        didFill = await fillSelect(locator, best.key, best.value);
       } else {
         didFill = await fillTextOrDate(page, locator, best.key, best.value);
       }
