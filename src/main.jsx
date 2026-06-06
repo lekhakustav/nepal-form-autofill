@@ -3,9 +3,6 @@ import { createRoot } from "react-dom/client";
 import {
   Activity,
   BadgeCheck,
-  Banknote,
-  BriefcaseBusiness,
-  Car,
   Check,
   ChevronLeft,
   ClipboardCheck,
@@ -14,7 +11,6 @@ import {
   FileScan,
   FileText,
   Gauge,
-  GraduationCap,
   IdCard,
   Loader2,
   LockKeyhole,
@@ -23,19 +19,13 @@ import {
   ShieldCheck,
   Sparkles,
   Upload,
-  Vote
 } from "lucide-react";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
 const formTypes = [
-  { id: "passport", title: "Passport Application", nepali: "राहदानी आवेदन", icon: FileText, accent: "red" },
-  { id: "driving_license", title: "Driving License", nepali: "सवारी चालक अनुमतिपत्र", icon: Car, accent: "blue" },
-  { id: "bank_account", title: "Bank Account Opening", nepali: "बैंक खाता खोल्ने", icon: Banknote, accent: "green" },
-  { id: "admission", title: "College Admission", nepali: "कलेज / विश्वविद्यालय भर्ना", icon: GraduationCap, accent: "amber" },
-  { id: "voter_registration", title: "Voter Registration", nepali: "मतदाता नामावली", icon: Vote, accent: "violet" },
-  { id: "government_job", title: "Government Job", nepali: "सरकारी जागिर आवेदन", icon: BriefcaseBusiness, accent: "slate" }
+  { id: "passport", title: "Passport Application", nepali: "राहदानी आवेदन", icon: FileText, accent: "red" }
 ];
 
 const fieldLabels = {
@@ -321,7 +311,7 @@ function UsagePanel({ usage, onRefresh }) {
       <div className="usage-head">
         <div>
           <h3>Usage & limits</h3>
-          <p>Shows this app's local usage. Google Cloud quota connection is separate from the Gemini key.</p>
+          <p>Shows this app's local Gemini extraction and portal-fill usage.</p>
         </div>
         <button className="icon-button" onClick={onRefresh} title="Refresh usage">
           <Activity size={18} />
@@ -351,7 +341,7 @@ function UsagePanel({ usage, onRefresh }) {
 
 function App() {
   const [selectedForm, setSelectedForm] = useState("passport");
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [masterData, setMasterData] = useState(null);
   const [formValues, setFormValues] = useState({});
   const [autoFields, setAutoFields] = useState({});
@@ -377,8 +367,12 @@ function App() {
   const missing = fields.length - completed;
   const detectedLabel = masterData?.id_type === "NID" ? "NID card detected" : masterData?.id_type === "SAMPLE" ? "Sample profile loaded" : "Citizenship card detected";
   const fillSource = sourceText(masterData?.id_type);
-  const isPdf = file?.type === "application/pdf" || file?.name?.toLowerCase().endsWith(".pdf");
-  const previewUrl = useMemo(() => (file && !isPdf ? URL.createObjectURL(file) : ""), [file, isPdf]);
+  const firstFile = files[0] || null;
+  const isPdf = firstFile?.type === "application/pdf" || firstFile?.name?.toLowerCase().endsWith(".pdf");
+  const previewUrl = useMemo(() => (firstFile && !isPdf ? URL.createObjectURL(firstFile) : ""), [firstFile, isPdf]);
+  const fileSummary = files.length
+    ? `${files.length} file${files.length === 1 ? "" : "s"} selected`
+    : "Upload passport source photos or PDFs";
   const portalOptions = portalGuides[selectedForm] || [];
   const portalSearch = portalSearches[selectedForm];
 
@@ -386,6 +380,12 @@ function App() {
     refreshHealth();
     refreshUsage();
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   function refreshHealth() {
     return fetch(`${API_BASE}/api/health`)
@@ -409,7 +409,7 @@ function App() {
       const response = await fetch(`${API_BASE}/api/settings/gemini`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: geminiKey, model: "gemini-2.0-flash" })
+        body: JSON.stringify({ api_key: geminiKey, model: "gemini-3.5-flash" })
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || "Could not save Gemini key");
@@ -425,12 +425,12 @@ function App() {
   }
 
   async function uploadAndExtract() {
-    if (!selectedForm || !file) return;
+    if (!selectedForm || files.length === 0) return;
     setLoading(true);
     setError("");
     setPortalResult("");
     const body = new FormData();
-    body.append("file", file);
+    files.forEach((selectedFile) => body.append("files", selectedFile));
     body.append("form_type", selectedForm);
     try {
       const response = await fetch(`${API_BASE}/api/extract`, { method: "POST", body });
@@ -548,7 +548,7 @@ function App() {
 
   function chooseForm(formId) {
     setSelectedForm(formId);
-    setFile(null);
+    setFiles([]);
     setMasterData(null);
     setFormValues({});
     setAutoFields({});
@@ -567,7 +567,7 @@ function App() {
         </button>
         <div className="status-pills">
           <span><LockKeyhole size={16} /> In-memory files</span>
-          <span><FileScan size={16} /> {health?.ocr === "ai_document_extraction" || health?.ocr === "gemini_document_extraction" ? "AI scan ready" : health?.ocr === "local_tesseract_ocr" ? "Local OCR backup" : health?.ocr === "google_vision_configured" ? "Google OCR ready" : "Text PDF only"}</span>
+          <span><FileScan size={16} /> {health?.ocr === "gemini_passport_extraction" ? "Gemini passport scan" : "Gemini key needed"}</span>
           <span><MousePointerClick size={16} /> Portal autofill</span>
         </div>
       </header>
@@ -575,8 +575,8 @@ function App() {
       <section className="workspace">
         <aside className="control-rail">
           <div className="rail-heading">
-            <p>Choose form</p>
-            <strong>{formTypes.length} templates</strong>
+            <p>Passport flow</p>
+            <strong>Local v1</strong>
           </div>
           <div className="form-list">
             {formTypes.map((form) => {
@@ -606,12 +606,12 @@ function App() {
         <section className="main-panel">
           <div className="hero-band">
             <div>
-              <span className="eyebrow"><Sparkles size={16} /> Fast form assistant</span>
-              <h1>Scan one ID. Review once. Fill many Nepal forms.</h1>
-              <p>Upload a Nagarikta, NID, image, or PDF, then edit the highlighted fields before downloading a PDF or opening an online portal for autofill.</p>
+              <span className="eyebrow"><Sparkles size={16} /> Passport assistant</span>
+              <h1>Upload passport documents. Review once. Fill ePassport locally.</h1>
+              <p>Send citizenship, NID, previous passport, or supporting PDFs/photos to Gemini, then review the extracted passport fields before opening the Nepal ePassport portal.</p>
             </div>
             <div className="flow-card">
-              <div className={masterData ? "done" : "current"}><FileScan size={19} /> Scan ID</div>
+              <div className={masterData ? "done" : "current"}><FileScan size={19} /> Scan documents</div>
               <div className={masterData ? "current" : ""}><ClipboardCheck size={19} /> Review fields</div>
               <div><Download size={19} /> PDF / Portal</div>
             </div>
@@ -621,20 +621,27 @@ function App() {
             <div className="intake-grid">
               <div className="upload-panel">
                 <button className="back-button" onClick={() => uploadRef.current?.click()}>
-                  <ChevronLeft size={16} /> Select file
+                  <ChevronLeft size={16} /> Select files
                 </button>
                 <div className="section-title">
                   <h2>{activeForm.title}</h2>
                   <p>{activeForm.nepali}</p>
                 </div>
-                <input ref={uploadRef} type="file" accept="image/*,.pdf,application/pdf" onChange={(event) => setFile(event.target.files?.[0] || null)} hidden />
+                <input
+                  ref={uploadRef}
+                  type="file"
+                  accept="image/*,.pdf,application/pdf"
+                  multiple
+                  onChange={(event) => setFiles(Array.from(event.target.files || []))}
+                  hidden
+                />
                 <button className="dropzone" onClick={() => uploadRef.current?.click()}>
                   {previewUrl ? <img src={previewUrl} alt="Selected ID preview" /> : isPdf ? <FileText size={46} /> : <Upload size={44} />}
-                  <span>{file ? file.name : "Upload ID card photo or PDF"}</span>
-                  <small>JPG, PNG, camera photo, searchable PDF, or scanned PDF</small>
+                  <span>{fileSummary}</span>
+                  <small>{files.length ? files.map((selectedFile) => selectedFile.name).join(", ") : "JPG, PNG, camera photo, searchable PDF, or scanned PDF"}</small>
                 </button>
                 <div className="button-row">
-                  <button className="primary" disabled={!file || loading} onClick={uploadAndExtract}>
+                  <button className="primary" disabled={files.length === 0 || loading} onClick={uploadAndExtract}>
                     {loading ? <Loader2 className="spin" size={18} /> : <IdCard size={18} />}
                     Extract and fill
                   </button>
@@ -648,10 +655,10 @@ function App() {
 
           <div className="reference-panel">
                 <h3>What it fills automatically</h3>
-                {health?.ocr !== "ai_document_extraction" && health?.ocr !== "gemini_document_extraction" && health?.ocr !== "google_vision_configured" && (
+                {health?.ocr !== "gemini_passport_extraction" && (
                   <div className="key-panel">
-                    <h4>Enable AI photo scanning</h4>
-                    <p>Paste a Gemini AI key once. The AI reads the photo/PDF and extracts names, dates, ID numbers, and family details.</p>
+                    <h4>Enable Gemini passport scanning</h4>
+                    <p>Paste a Gemini API key once. Gemini reads the uploaded passport source packet and extracts names, dates, ID numbers, family details, and contact fields.</p>
                     <div className="key-row">
                       <input
                         type="password"
@@ -674,7 +681,7 @@ function App() {
                   })}
                 </div>
                 <div className="reference-steps">
-                  <p><BadgeCheck size={18} /> ID details become a reusable master profile for this form.</p>
+                  <p><BadgeCheck size={18} /> Passport source details become one reviewed application profile.</p>
                   <p><BadgeCheck size={18} /> Green fields came from the ID; yellow fields still need review.</p>
                   <p><BadgeCheck size={18} /> Portal autofill never presses final submit.</p>
                 </div>
@@ -700,7 +707,7 @@ function App() {
                   <small>{missing ? `${missing} fields need a value` : "Ready to download or fill a portal"}</small>
                 </div>
                 <UsagePanel usage={usage} onRefresh={refreshUsage} />
-                <button className="secondary full" onClick={() => setMasterData(null)}>Upload another ID</button>
+                <button className="secondary full" onClick={() => setMasterData(null)}>Upload another packet</button>
               </aside>
 
               <section className="form-board">
