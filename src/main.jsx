@@ -22,6 +22,7 @@ import {
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const HIGH_CONFIDENCE_THRESHOLD = 0.95;
 
 const formTypes = [
   { id: "passport", title: "Passport Application", nepali: "राहदानी आवेदन", icon: FileText, accent: "red" }
@@ -283,6 +284,10 @@ function flattenMaster(master = {}) {
     gender: master.gender || "",
     nationality: master.nationality || "",
     marital_status: master.marital_status || "",
+    application_type: master.application_type || "",
+    passport_type: master.passport_type || "",
+    birth_place: master.birth_place || "",
+    old_passport_number: master.old_passport_number || "",
     province: master.province || master.permanent_address?.province || "",
     address_district: master.permanent_address?.district || "",
     address_municipality: master.permanent_address?.municipality || "",
@@ -299,6 +304,28 @@ function flattenMaster(master = {}) {
     spouse_name: master.spouse_name || "",
     occupation: master.occupation || "",
     blood_group: master.blood_group || "",
+    phone: master.phone || "",
+    email: master.email || "",
+    bank_branch: master.bank_branch || "",
+    account_type: master.account_type || "",
+    account_currency: master.account_currency || "",
+    income_source: master.income_source || "",
+    education_level: master.education_level || "",
+    institution_name: master.institution_name || "",
+    faculty: master.faculty || "",
+    guardian_name: master.guardian_name || "",
+    program: master.program || "",
+    level: master.level || "",
+    license_category: master.license_category || "",
+    vehicle_type: master.vehicle_type || "",
+    training_center: master.training_center || "",
+    registration_place: master.registration_place || "",
+    voter_area: master.voter_area || "",
+    polling_place: master.polling_place || "",
+    advertisement_number: master.advertisement_number || "",
+    post_applied: master.post_applied || "",
+    service_group: master.service_group || "",
+    exam_center: master.exam_center || "",
     issued_district: master.issued_district || "",
     issued_date: master.issued_date || "",
     expiry_date: master.expiry_date || ""
@@ -311,15 +338,27 @@ function sourceText(idType) {
   return "Filled from Citizenship Card";
 }
 
+function formatConfidenceScore(confidence) {
+  const score = Number(confidence);
+  if (!Number.isFinite(score) || score <= 0) return "";
+  return `${Math.round(score * 100)}%`;
+}
+
 function applyMasterToForm(formId, master) {
-  const flattened = { ...flattenMaster(master), ...(defaultsByForm[formId] || {}) };
+  const flattened = flattenMaster(master);
+  const confidenceMap = master?.field_confidence || {};
   const initialValues = {};
   const sourceMap = {};
+  const reviewMap = {};
   formConfigs[formId].forEach((field) => {
-    initialValues[field] = flattened[field] || "";
-    sourceMap[field] = Boolean(flattened[field]);
+    const value = flattened[field] || "";
+    const confidence = Number(confidenceMap[field]);
+    const highConfidence = Boolean(String(value).trim()) && Number.isFinite(confidence) && confidence >= HIGH_CONFIDENCE_THRESHOLD;
+    initialValues[field] = highConfidence ? value : "";
+    sourceMap[field] = highConfidence;
+    reviewMap[field] = Boolean(String(value).trim()) && Number.isFinite(confidence) && confidence > 0 && confidence < HIGH_CONFIDENCE_THRESHOLD;
   });
-  return { initialValues, sourceMap };
+  return { initialValues, sourceMap, reviewMap };
 }
 
 function formatNumber(value) {
@@ -405,6 +444,10 @@ function App() {
   const unmatchedFields = masterData?.unmatched_fields || [];
   const debugTrace = masterData?.debug_trace || {};
   const debugRows = Object.entries(debugTrace).map(([field, meta]) => ({ field, ...(meta || {}) }));
+  const reviewRequiredFields = fields.filter((field) => {
+    const confidence = Number(fieldConfidence[field]);
+    return Number.isFinite(confidence) && confidence > 0 && confidence < HIGH_CONFIDENCE_THRESHOLD;
+  });
 
   useEffect(() => {
     refreshHealth();
@@ -488,7 +531,11 @@ function App() {
   }
 
   function useSampleProfile() {
-    const master = { ...sampleMaster, id_type: "SAMPLE" };
+    const mergedSample = { ...sampleMaster, ...(defaultsByForm[selectedForm] || {}), id_type: "SAMPLE" };
+    const sampleConfidence = Object.fromEntries(
+      Object.entries(flattenMaster(mergedSample)).map(([field, value]) => [field, String(value || "").trim() ? 0.99 : 0])
+    );
+    const master = { ...mergedSample, field_confidence: sampleConfidence, validation_warnings: [] };
     const { initialValues, sourceMap } = applyMasterToForm(selectedForm, master);
     setMasterData(master);
     setFormValues(initialValues);
@@ -548,6 +595,8 @@ function App() {
           browser_profile: portalProfile,
           values: {
             ...formValues,
+            field_confidence: masterData?.field_confidence || {},
+            field_sources: masterData?.field_sources || {},
             ...(selectedForm === "passport" && passportReference.trim()
               ? { passport_reference: passportReference.trim(), application_reference: passportReference.trim() }
               : {})
@@ -556,7 +605,7 @@ function App() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || "Portal autofill failed");
-      setPortalResult(payload.message || "Your supported default browser opened. Complete login/CAPTCHA/OTP manually if needed. Autofill will watch for form pages and fill safe visible fields as they appear.");
+      setPortalResult("Your supported default browser opened. The current page was filled only where the portal matched high-confidence values. Move through the portal manually; login, CAPTCHA, OTP, appointment booking, payment, Next, Proceed, and final submit stay manual.");
       await refreshUsage();
       await refreshPortalReport();
     } catch (err) {
@@ -647,8 +696,8 @@ function App() {
           <div className="hero-band">
             <div>
               <span className="eyebrow"><Sparkles size={16} /> Passport assistant</span>
-              <h1>Upload passport documents. Review once. Fill ePassport locally.</h1>
-              <p>Send citizenship, NID, previous passport, or supporting PDFs/photos to Gemini, then review the extracted passport fields before opening the Nepal ePassport portal.</p>
+              <h1>Upload passport documents. Review once. Only high-confidence fields auto-fill.</h1>
+              <p>Send citizenship, NID, previous passport, or supporting PDFs/photos to Gemini. The app fills only extracted fields that clear the confidence cutoff, leaves uncertain fields blank, and keeps the Nepal ePassport portal flow local and review-first.</p>
             </div>
             <div className="flow-card">
               <div className={masterData ? "done" : "current"}><FileScan size={19} /> Scan documents</div>
@@ -683,7 +732,7 @@ function App() {
                 <div className="button-row">
                   <button className="primary" disabled={files.length === 0 || loading} onClick={uploadAndExtract}>
                     {loading ? <Loader2 className="spin" size={18} /> : <IdCard size={18} />}
-                    Extract and fill
+                    Extract and review
                   </button>
                   <button className="secondary" onClick={useSampleProfile}>
                     <Sparkles size={18} />
@@ -727,9 +776,9 @@ function App() {
                   })}
                 </div>
                 <div className="reference-steps">
-                  <p><BadgeCheck size={18} /> Passport source details become one reviewed application profile.</p>
-                  <p><BadgeCheck size={18} /> Green fields came from the ID; yellow fields still need review.</p>
-                  <p><BadgeCheck size={18} /> Portal autofill never presses final submit.</p>
+                  <p><BadgeCheck size={18} /> Only fields at or above the confidence cutoff are auto-filled. Lower-confidence fields stay blank for manual review.</p>
+                  <p><BadgeCheck size={18} /> The review panel shows confidence, validation warnings, and any fields left blank on purpose.</p>
+                  <p><BadgeCheck size={18} /> Portal autofill fills the current page only. It never clicks Next, Proceed, appointment booking, payment, or final submit.</p>
                 </div>
                 <UsagePanel usage={usage} onRefresh={refreshUsage} />
               </div>
@@ -750,14 +799,20 @@ function App() {
                 <div className="completion-box">
                   <span>{completion}% complete</span>
                   <div className="progress"><i style={{ width: `${completion}%` }} /></div>
-                  <small>{missing ? `${missing} fields need a value` : "Ready to download or fill a portal"}</small>
+                  <small>{reviewRequiredFields.length ? `${reviewRequiredFields.length} extracted fields were left blank because confidence was below ${Math.round(HIGH_CONFIDENCE_THRESHOLD * 100)}%.` : missing ? `${missing} fields still need a value.` : "Ready to download or fill a portal"}</small>
                 </div>
-                {validationWarnings.length > 0 && (
-                  <div className="warning-box">
-                    <strong>Review warnings</strong>
-                    <ul>
-                      {validationWarnings.slice(0, 6).map((warning) => <li key={warning}>{warning}</li>)}
-                    </ul>
+                {(reviewRequiredFields.length > 0 || validationWarnings.length > 0) && (
+                  <div className="warning-box review-box">
+                    <strong>Review required</strong>
+                    <p>High-confidence fields were prefilled. Everything below the cutoff stayed blank so you can review it before using the form.</p>
+                    {reviewRequiredFields.length > 0 && (
+                      <p>{reviewRequiredFields.length} fields were left blank because their confidence was below {Math.round(HIGH_CONFIDENCE_THRESHOLD * 100)}%.</p>
+                    )}
+                    {validationWarnings.length > 0 && (
+                      <ul>
+                        {validationWarnings.slice(0, 6).map((warning) => <li key={warning}>{warning}</li>)}
+                      </ul>
+                    )}
                   </div>
                 )}
                 {unmatchedFields.length > 0 && (
@@ -809,9 +864,17 @@ function App() {
                         const label = fieldLabels[field] || [field, field];
                         const filled = String(formValues[field] || "").trim();
                         const auto = autoFields[field];
-                        const confidence = fieldConfidence[field];
+                        const confidence = Number(fieldConfidence[field]);
+                        const hasConfidence = Number.isFinite(confidence) && confidence > 0;
+                        const reviewRequired = !auto && hasConfidence && confidence < HIGH_CONFIDENCE_THRESHOLD;
+                        const confidenceLabel = formatConfidenceScore(confidence);
+                        const fieldStatus = auto
+                          ? `Auto-filled${confidenceLabel ? ` • ${confidenceLabel}` : ""}`
+                          : reviewRequired
+                            ? `Left blank for review${confidenceLabel ? ` • ${confidenceLabel}` : ""}`
+                            : "Please fill manually";
                         return (
-                          <label className={`sheet-cell ${filled ? "filled" : "empty"}`} key={field}>
+                          <label className={`sheet-cell ${filled ? "filled" : "empty"} ${auto ? "auto" : reviewRequired ? "review" : "manual"}`} key={field}>
                             <span className="label-line">{label[0]} <em>{label[1]}</em></span>
                             <input
                               value={formValues[field] || ""}
@@ -821,7 +884,7 @@ function App() {
                                 setAutoFields((current) => ({ ...current, [field]: current[field] && Boolean(value) }));
                               }}
                             />
-                            <small>{auto ? `${fillSource}${confidence ? ` • ${Math.round(confidence * 100)}%` : ""}` : "Please fill manually"}</small>
+                            <small>{auto ? `${fillSource}${confidenceLabel ? ` • ${confidenceLabel}` : ""}` : fieldStatus}</small>
                           </label>
                         );
                       })}
@@ -840,7 +903,7 @@ function App() {
                   <button className="secondary" onClick={() => downloadPdf(true)}><Printer size={18} /> Print</button>
                 </div>
 
-                <div className="portal-panel">
+                  <div className="portal-panel">
                   <div>
                     <h3>Fill an online portal</h3>
                     <p>Select a portal and start autofill. The app opens the selected portal profile, fills only the current page after OCR is ready, and waits for you to manually navigate to the next page. It never clicks Next, Proceed, appointment steps, payment, or final submit.</p>
@@ -867,7 +930,7 @@ function App() {
                         <div className="passport-help">
                           <div>
                             <strong>e-Passport workflow</strong>
-                            <span>New application: open the Online Pre-Enrollment Form, fill it, submit it yourself, then keep the PDF receipt or appointment slip.</span>
+                            <span>New application: open the Online Pre-Enrollment Form, fill it yourself, submit it yourself, then keep the PDF receipt or appointment slip.</span>
                           </div>
                           <div>
                             <strong>Already applied?</strong>
@@ -897,7 +960,7 @@ function App() {
                           <div className="portal-option-actions">
                             <button className="primary portal-primary" disabled={portalLoading} onClick={() => openAndAutofillPortal(portal.url)}>
                               {portalLoading ? <Loader2 className="spin" size={16} /> : <MousePointerClick size={16} />}
-                              Open & Autofill
+                              Open & fill page
                             </button>
                             <button className="secondary" onClick={() => openPortalUrl(portal.url)}>Open</button>
                             <button className="secondary" onClick={() => usePortalUrl(portal.url)}>Use URL</button>
@@ -914,7 +977,7 @@ function App() {
                     />
                     <button className="secondary" disabled={!portalUrl || portalLoading} onClick={autofillPortal}>
                       {portalLoading ? <Loader2 className="spin" size={18} /> : <MousePointerClick size={18} />}
-                      Autofill portal
+                      Fill current page
                     </button>
                   </div>
                   <small>Log in or pass CAPTCHA/OTP manually if the portal asks. Autofill fills only the current page, then waits for you to manually move through the portal. Password, CAPTCHA, OTP, Next, Proceed, appointment, payment, and final submit are never filled or clicked automatically. Supported default browsers: Chrome, Edge, or Brave.</small>

@@ -91,6 +91,7 @@ DATE_FIELDS = {
 }
 
 KNOWN_FIELDS = {
+    "id_type",
     "full_name_english",
     "full_name_nepali",
     "date_of_birth",
@@ -139,6 +140,146 @@ KNOWN_FIELDS = {
     "debug_trace",
     "province_guess",
 }
+
+
+SAFE_FILL_CONFIDENCE_THRESHOLD = 0.8
+FIELD_CONFIDENCE_THRESHOLDS = {
+    "application_type": 0.75,
+    "birth_place": 0.7,
+    "blood_group": 0.88,
+    "citizenship_issue_district": 0.8,
+    "date_of_birth": 0.88,
+    "email": 0.85,
+    "father_name": 0.78,
+    "full_name_english": 0.78,
+    "full_name_nepali": 0.78,
+    "gender": 0.9,
+    "grandfather_name": 0.78,
+    "issue_place": 0.7,
+    "issued_date": 0.88,
+    "issued_district": 0.8,
+    "marital_status": 0.9,
+    "mother_name": 0.78,
+    "nationality": 0.9,
+    "occupation": 0.7,
+    "passport_type": 0.75,
+    "phone": 0.85,
+    "province": 0.8,
+    "spouse_name": 0.78,
+    "temporary_address_district": 0.8,
+    "temporary_address_municipality": 0.7,
+    "temporary_address_ward": 0.95,
+    "address_district": 0.8,
+    "address_municipality": 0.7,
+    "address_ward": 0.95,
+    "ward": 0.95,
+    "expiry_date": 0.88,
+}
+
+
+def confidence_threshold_for_field(field: str) -> float:
+    return FIELD_CONFIDENCE_THRESHOLDS.get(field, SAFE_FILL_CONFIDENCE_THRESHOLD)
+
+
+def low_confidence_warning(field: str) -> str:
+    return f"{field}_low_confidence"
+
+
+def append_warning(warnings: list[str], warning: str) -> None:
+    if warning and warning not in warnings:
+        warnings.append(warning)
+
+
+def gate_field_value(field: str, final: Any, meta: dict[str, Any], warnings: list[str]) -> tuple[Any, dict[str, Any]]:
+    if isinstance(final, dict) or final in ("", None) or final == []:
+        return final, meta
+    if float(meta.get("confidence", 0.0)) < confidence_threshold_for_field(field):
+        warning = low_confidence_warning(field)
+        append_warning(warnings, warning)
+        gated_meta = dict(meta)
+        gated_meta["final"] = "" if isinstance(final, str) else None
+        gated_meta["warnings"] = list(dict.fromkeys([*meta.get("warnings", []), warning]))
+        return gated_meta["final"], gated_meta
+    return final, meta
+
+
+def get_raw_confidence(raw_extracted: dict[str, Any], field: str) -> float | None:
+    confidences = raw_extracted.get("field_confidence") or {}
+    if not isinstance(confidences, dict):
+        return None
+    direct = confidences.get(field)
+    if direct is not None:
+        try:
+            return max(0.0, min(1.0, float(direct)))
+        except (TypeError, ValueError):
+            return None
+    nested_map = {
+        "permanent_address_district": ("permanent_address", "district"),
+        "permanent_address_municipality": ("permanent_address", "municipality"),
+        "permanent_address_ward": ("permanent_address", "ward"),
+        "address_district": ("permanent_address", "district"),
+        "address_municipality": ("permanent_address", "municipality"),
+        "address_ward": ("permanent_address", "ward"),
+        "temporary_address_district": ("temporary_address", "district"),
+        "temporary_address_municipality": ("temporary_address", "municipality"),
+        "temporary_address_ward": ("temporary_address", "ward"),
+    }
+    parent_key, child_key = nested_map.get(field, ("", ""))
+    nested = confidences.get(parent_key) if parent_key else None
+    if isinstance(nested, dict) and nested.get(child_key) is not None:
+        try:
+            return max(0.0, min(1.0, float(nested[child_key])))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def apply_raw_confidence(field: str, meta: dict[str, Any], raw_extracted: dict[str, Any]) -> dict[str, Any]:
+    raw_confidence = get_raw_confidence(raw_extracted, field)
+    if raw_confidence is None:
+        return meta
+    source = str(meta.get("source") or "")
+    warnings = set(meta.get("warnings") or [])
+    if source in {"fuzzy", "romanized", "inferred"} or warnings:
+        combined = min(raw_confidence, float(meta.get("confidence", 0.0) or 0.0))
+    else:
+        combined = raw_confidence
+    updated = dict(meta)
+    updated["confidence"] = round(combined, 2)
+    updated["extraction_confidence"] = raw_confidence
+    return updated
+
+
+def validate_address_hierarchy(
+    profile: dict[str, Any],
+    field_confidence: dict[str, float],
+    debug_trace: dict[str, Any],
+    warnings: list[str],
+) -> None:
+    permanent_address = profile.get("permanent_address") or {}
+    if isinstance(permanent_address, dict):
+        district = str(permanent_address.get("district") or "").strip()
+        province = str(profile.get("province") or "").strip()
+        expected_province = infer_province(district)
+        if district and not province and expected_province:
+            append_warning(warnings, "province_missing_for_permanent_address")
+        if district and province and expected_province and read_text_key(province) != read_text_key(expected_province):
+            warning = "province_conflicts_with_permanent_district"
+            append_warning(warnings, warning)
+            profile["province"] = ""
+            field_confidence["province"] = min(float(field_confidence.get("province", 0.0) or 0.0), 0.4)
+            if "province" in debug_trace:
+                meta = dict(debug_trace["province"])
+                meta["final"] = ""
+                meta["warnings"] = list(dict.fromkeys([*meta.get("warnings", []), warning]))
+                debug_trace["province"] = meta
+    issued_district = str(profile.get("issued_district") or "").strip()
+    citizenship_issue_district = str(profile.get("citizenship_issue_district") or "").strip()
+    issue_place = str(profile.get("issue_place") or "").strip()
+    if issued_district and citizenship_issue_district and read_text_key(issued_district) != read_text_key(citizenship_issue_district):
+        append_warning(warnings, "citizenship_issue_district_conflicts_with_issued_district")
+    if issue_place and issued_district and read_text_key(issue_place) == read_text_key(issued_district):
+        append_warning(warnings, "issue_place_matches_issued_district")
 
 
 def read_text_key(value: Any) -> str:
@@ -278,11 +419,11 @@ def normalize_person_name(value: str) -> tuple[str, list[str], float, str]:
     if not original:
         return "", [], 0.0, "empty"
     source = original
-    confidence = 0.6
+    confidence = 0.96
     warnings: list[str] = []
     if has_devanagari(original):
         source = romanize_nepali(original)
-        confidence = 0.72
+        confidence = 0.84
         warnings.append("romanized_from_devanagari")
     source = source.replace(".", " ").replace("_", " ")
     source = re.sub(r"\s+", " ", source).strip()
@@ -338,7 +479,7 @@ def canonicalize_from_tables(value: str, candidates: dict[str, list[str]]) -> tu
     if best_name and best_score >= 0.72:
         warnings.append("fuzzy_match")
         return best_name, round(0.65 + best_score * 0.3, 2), "fuzzy", warnings
-    return title_case_words(working), 0.48 if source == "romanized" else 0.55, source, warnings
+    return title_case_words(working), 0.72 if source == "romanized" else 0.58, source, warnings
 
 
 def canonicalize_place(field: str, value: str) -> tuple[str, float, str, list[str]]:
@@ -365,8 +506,9 @@ def canonicalize_place(field: str, value: str) -> tuple[str, float, str, list[st
             return simplify_administrative_place_name(canonical), confidence, source, warnings
         if has_devanagari(value):
             warnings.append("romanized_place")
-        return simplify_administrative_place_name(title_case_words(canonical)), confidence, source, warnings
-    if field_key in {"address_ward", "temporary_address_ward"}:
+        fallback_confidence = 0.82 if field_key == "issue_place" and re.search(r"\b(office|department|administration|bureau|division)\b", read_text_key(canonical)) else 0.72 if field_key == "issue_place" else confidence
+        return simplify_administrative_place_name(title_case_words(canonical)), fallback_confidence, source, warnings
+    if field_key in {"address_ward", "permanent_address_ward", "temporary_address_ward"}:
         digits = re.sub(r"[^0-9]", "", normalize_digits(value) if isinstance(value, str) else str(value))
         return digits or str(value).strip(), 0.99 if digits else 0.45, "numeric", []
     return title_case_words(str(value).strip()), 0.55, "literal", []
@@ -404,7 +546,9 @@ def canonicalize_select(field: str, value: str) -> tuple[str, float, str, list[s
     if field == "province":
         return canonicalize_place(field, text)
     if field in {"application_type", "passport_type", "blood_group", "account_type", "license_category", "vehicle_type", "level", "service_group"}:
-        return title_case_words(text), 0.7, "literal", []
+        return title_case_words(text), 0.85, "literal", []
+    if field == "occupation":
+        return title_case_words(text), 0.78, "literal", []
     return title_case_words(text), 0.65, "literal", []
 
 
@@ -431,7 +575,7 @@ def infer_province(district: str | None) -> str | None:
     return DISTRICT_TO_PROVINCE.get(district)
 
 
-def normalize_field(field: str, value: Any) -> tuple[Any, dict[str, Any]]:
+def normalize_field(field: str, value: Any, raw_extracted: dict[str, Any] | None = None) -> tuple[Any, dict[str, Any]]:
     if value is None or value == "":
         return value, {
             "original": value,
@@ -441,7 +585,31 @@ def normalize_field(field: str, value: Any) -> tuple[Any, dict[str, Any]]:
             "warnings": [],
         }
     if isinstance(value, dict):
-        return normalize_nested(field, value)
+        return normalize_nested(field, value, raw_extracted)
+    if field in {"citizenship_number", "nid_number", "old_passport_number", "phone", "email"}:
+        text = str(value).strip()
+        warnings: list[str] = []
+        if field == "email":
+            final = text.lower()
+            confidence = 0.98 if re.search(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", final) else 0.72 if "@" in final else 0.4
+            if confidence < 0.9:
+                warnings.append("email_format_uncertain")
+        elif field == "phone":
+            final = re.sub(r"[^0-9+]", "", normalize_digits(text) if isinstance(text, str) else text)
+            confidence = 0.98 if len(re.sub(r"\D", "", final)) >= 7 else 0.65
+            if confidence < 0.9:
+                warnings.append("phone_format_uncertain")
+        else:
+            final = normalize_digits(text)
+            confidence = 0.98 if final else 0.0
+        source = "literal"
+        return final, {
+            "original": value,
+            "final": final,
+            "confidence": round(confidence, 2),
+            "source": source,
+            "warnings": warnings,
+        }
     if field in DATE_FIELDS:
         final, confidence, source, warnings = canonicalize_date(str(value))
     elif field in NAME_FIELDS:
@@ -450,6 +618,11 @@ def normalize_field(field: str, value: Any) -> tuple[Any, dict[str, Any]]:
         final, confidence, source, warnings = canonicalize_place(field, str(value))
     elif field in SELECT_FIELDS:
         final, confidence, source, warnings = canonicalize_select(field, str(value))
+    elif field == "occupation":
+        final = title_case_words(str(value).strip())
+        confidence = 0.78 if final else 0.0
+        source = "literal"
+        warnings = []
     else:
         final = title_case_words(str(value).strip())
         confidence = 0.65 if final else 0.0
@@ -464,12 +637,14 @@ def normalize_field(field: str, value: Any) -> tuple[Any, dict[str, Any]]:
     }
 
 
-def normalize_nested(field: str, value: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def normalize_nested(field: str, value: dict[str, Any], raw_extracted: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     normalized: dict[str, Any] = {}
     trace = {"original": deepcopy(value), "final": {}, "confidence": 0.0, "source": "nested", "warnings": [], "children": {}}
     for nested_key, nested_value in value.items():
         nested_field = f"{field}_{nested_key}"
-        final, meta = normalize_field(nested_field, nested_value)
+        final, meta = normalize_field(nested_field, nested_value, raw_extracted)
+        meta = apply_raw_confidence(nested_field, meta, raw_extracted or {})
+        final, meta = gate_field_value(nested_field, final, meta, trace["warnings"])
         normalized[nested_key] = final
         trace["final"][nested_key] = final
         trace["children"][nested_key] = meta
@@ -487,30 +662,16 @@ def normalize_profile(master: dict[str, Any], raw_extracted: dict[str, Any] | No
     warnings: list[str] = []
 
     for key, value in list(profile.items()):
-        if key.startswith("field_") or key in {"validation_warnings", "unmatched_fields", "debug_trace"}:
+        if key == "id_type" or key.startswith("field_") or key in {"validation_warnings", "unmatched_fields", "debug_trace"}:
             continue
-        final, meta = normalize_field(key, value)
+        final, meta = normalize_field(key, value, raw_extracted)
+        meta = apply_raw_confidence(key, meta, raw_extracted)
+        final, meta = gate_field_value(key, final, meta, warnings)
         profile[key] = final
         field_confidence[key] = meta["confidence"]
         field_sources[key] = meta["source"]
         debug_trace[key] = meta
         warnings.extend(meta["warnings"])
-
-    permanent_address = profile.get("permanent_address") or {}
-    if isinstance(permanent_address, dict):
-        district = permanent_address.get("district")
-        province = profile.get("province") or infer_province(district)
-        if province:
-            profile["province"] = province
-            field_confidence["province"] = 0.9 if profile.get("province") else 0.72
-            field_sources["province"] = "inferred"
-            debug_trace["province"] = {
-                "original": profile.get("province"),
-                "final": province,
-                "confidence": field_confidence["province"],
-                "source": "inferred",
-                "warnings": [] if profile.get("province") else ["province_inferred_from_district"],
-            }
     permanent_trace = debug_trace.get("permanent_address")
     if isinstance(permanent_trace, dict):
         for sub_key, flat_key in {
@@ -519,8 +680,11 @@ def normalize_profile(master: dict[str, Any], raw_extracted: dict[str, Any] | No
             "ward": "address_ward",
         }.items():
             if sub_key in permanent_trace.get("final", {}):
-                profile[flat_key] = permanent_trace["final"].get(sub_key)
                 meta = permanent_trace.get("children", {}).get(sub_key, {})
+                meta = apply_raw_confidence(flat_key, meta, raw_extracted)
+                final = permanent_trace["final"].get(sub_key)
+                final, meta = gate_field_value(flat_key, final, meta, warnings)
+                profile[flat_key] = final
                 field_confidence[flat_key] = float(meta.get("confidence", permanent_trace.get("confidence", 0.0)))
                 field_sources[flat_key] = meta.get("source", permanent_trace.get("source", "nested"))
                 debug_trace[flat_key] = {
@@ -538,8 +702,11 @@ def normalize_profile(master: dict[str, Any], raw_extracted: dict[str, Any] | No
             "ward": "temporary_address_ward",
         }.items():
             if sub_key in temporary_trace.get("final", {}):
-                profile[flat_key] = temporary_trace["final"].get(sub_key)
                 meta = temporary_trace.get("children", {}).get(sub_key, {})
+                meta = apply_raw_confidence(flat_key, meta, raw_extracted)
+                final = temporary_trace["final"].get(sub_key)
+                final, meta = gate_field_value(flat_key, final, meta, warnings)
+                profile[flat_key] = final
                 field_confidence[flat_key] = float(meta.get("confidence", temporary_trace.get("confidence", 0.0)))
                 field_sources[flat_key] = meta.get("source", temporary_trace.get("source", "nested"))
                 debug_trace[flat_key] = {
@@ -549,39 +716,7 @@ def normalize_profile(master: dict[str, Any], raw_extracted: dict[str, Any] | No
                     "source": field_sources[flat_key],
                     "warnings": meta.get("warnings", []),
                 }
-    if not profile.get("nationality") and id_type in {"CITIZENSHIP", "NID"}:
-        profile["nationality"] = "Nepali"
-        field_confidence["nationality"] = 0.93
-        field_sources["nationality"] = "inferred"
-        debug_trace["nationality"] = {
-            "original": None,
-            "final": "Nepali",
-            "confidence": 0.93,
-            "source": "inferred",
-            "warnings": ["nationality_inferred_from_id_type"],
-        }
-    if not profile.get("issue_place") and profile.get("issued_district"):
-        profile["issue_place"] = profile["issued_district"]
-        field_confidence["issue_place"] = 0.82
-        field_sources["issue_place"] = "inferred"
-        debug_trace["issue_place"] = {
-            "original": None,
-            "final": profile["issue_place"],
-            "confidence": 0.82,
-            "source": "inferred",
-            "warnings": ["issue_place_inferred_from_issued_district"],
-        }
-    if not profile.get("citizenship_issue_district") and profile.get("issued_district"):
-        profile["citizenship_issue_district"] = profile["issued_district"]
-        field_confidence["citizenship_issue_district"] = 0.8
-        field_sources["citizenship_issue_district"] = "inferred"
-        debug_trace["citizenship_issue_district"] = {
-            "original": None,
-            "final": profile["citizenship_issue_district"],
-            "confidence": 0.8,
-            "source": "inferred",
-            "warnings": ["citizenship_issue_district_inferred"],
-        }
+    validate_address_hierarchy(profile, field_confidence, debug_trace, warnings)
 
     normalized_raw_keys = set(KNOWN_FIELDS)
     unmatched_fields = [

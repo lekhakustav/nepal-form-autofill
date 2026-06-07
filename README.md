@@ -10,9 +10,10 @@ AI-assisted local passport application autofill for Nepal ePassport workflows.
 - Multi-file upload supports Nagarikta, NID, previous passport, and supporting image/PDF files.
 - Gemini document extraction uses `gemini-3.5-flash` for photos, scanned PDFs, and searchable PDFs.
 - Unified passport applicant profile for review before portal fill.
-- Green auto-filled fields and yellow manual fields.
+- Only high-confidence extracted fields are auto-filled; uncertain fields stay blank and are flagged for review.
+- Validation warnings and field confidence are surfaced in the review UI before portal fill starts.
 - Completion progress, print, and ReportLab PDF download.
-- Portal autofill mode opens a controlled local Chrome/Edge/Brave profile, fills safe visible ePassport fields, handles gender tick/radio controls and date widgets where possible, and leaves the page open for review.
+- Portal autofill mode opens a controlled local Chrome/Edge/Brave profile, fills safe visible ePassport fields on the current page only, handles gender tick/radio controls and date widgets where possible, and leaves page navigation, appointment booking, payment, and final submit manual.
 - Privacy-first backend: uploaded images and PDFs are processed in memory and not saved.
 
 ## Run locally
@@ -97,7 +98,7 @@ npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
 
 Open `http://127.0.0.1:5174/`.
 
-Portal autofill needs Node.js dependencies installed with `npm install` and a local Chrome, Edge, or Brave browser. It does not use a browser extension and does not click final submit buttons, CAPTCHA, OTP, password, login, or payment controls. The autofill runs on the same machine as the browser and is review-only.
+Portal autofill needs Node.js dependencies installed with `npm install` and a local Chrome, Edge, or Brave browser. It does not use a browser extension and does not click final submit buttons, CAPTCHA, OTP, password, login, appointment booking, or payment controls. The autofill runs on the same machine as the browser, fills only high-confidence values, and leaves uncertain fields blank for manual review.
 
 ## Production env
 

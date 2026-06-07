@@ -588,6 +588,38 @@ h1 {
   font-weight: 720;
 }
 
+.warning-box {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 13px;
+  border: 1px solid #e2c06c;
+  border-radius: 8px;
+  background: #fff8e6;
+  color: #7a4a00;
+}
+
+.warning-box.review-box {
+  border-color: #dcab2e;
+  background: #fff6dc;
+}
+
+.warning-box strong {
+  color: #5c3600;
+  font-size: 14px;
+}
+
+.warning-box p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.warning-box ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.45;
+}
+
 .progress {
   height: 10px;
   overflow: hidden;
@@ -666,8 +698,11 @@ h1 {
 }
 
 .sheet-cell:nth-child(2n) { border-right: 0; }
-.sheet-cell.filled { box-shadow: inset 5px 0 0 #0f8a5f; background: #f4fbf7; }
-.sheet-cell.empty { box-shadow: inset 5px 0 0 #d08a00; background: #fffaf0; }
+.sheet-cell.filled { box-shadow: inset 5px 0 0 #0f8a5f; }
+.sheet-cell.empty { box-shadow: inset 5px 0 0 #d08a00; }
+.sheet-cell.auto { background: #f4fbf7; box-shadow: inset 5px 0 0 #0f8a5f; }
+.sheet-cell.review { background: #fff7e3; box-shadow: inset 5px 0 0 #d08a00; }
+.sheet-cell.manual { background: #f8fbff; box-shadow: inset 5px 0 0 #c7d4e6; }
 
 .label-line {
   color: #152033;
@@ -696,6 +731,18 @@ h1 {
 .sheet-cell small {
   color: #53617d;
   font-weight: 760;
+}
+
+.sheet-cell.auto small {
+  color: #0f5f42;
+}
+
+.sheet-cell.review small {
+  color: #8a4b00;
+}
+
+.sheet-cell.manual small {
+  color: #5c6e87;
 }
 
 .sheet-signatures {

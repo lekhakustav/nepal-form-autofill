@@ -4,6 +4,14 @@
 
 This build is intentionally passport-only. The local app should turn a packet of passport source documents into a reviewed applicant profile, then open the Nepal ePassport portal in a local Chromium browser profile and fill safe visible fields.
 
+## Review Contract
+
+- Only extracted fields at or above the confidence cutoff are auto-filled into the review form.
+- Lower-confidence fields stay blank on purpose so the user can inspect and enter them manually.
+- The UI surfaces `field_confidence` and `validation_warnings` when Gemini provides them, so review-required states are visible before any portal work starts.
+- The portal flow is page-local only: the user manually moves through pages, completes login/CAPTCHA/OTP, and handles appointment booking, payment, and final submit.
+- Current cutoff in the React client is 95 percent, matching the safe-fill behavior used elsewhere in the portal automation path.
+
 ## Extraction Mechanism
 
 - Frontend sends repeated `files` form-data entries to `POST /api/extract` with `form_type=passport`.
@@ -26,8 +34,9 @@ This build is intentionally passport-only. The local app should turn a packet of
 
 - `POST /api/portal/autofill` starts `scripts/portal-fill.js`.
 - The script uses Playwright with a persistent local Chrome/Edge/Brave profile.
-- The user handles login, CAPTCHA, OTP, payment, and final submit manually.
+- The user handles login, CAPTCHA, OTP, payment, appointment booking, page navigation, and final submit manually.
 - The script may fill text inputs, selects, radio buttons, checkboxes/tick questions, and date widgets when labels match reviewed applicant values.
+- The script intentionally skips fields below the confidence threshold instead of guessing.
 - Gender, application type, passport type, DOB, issued date, and expiry date should be treated as first-class portal-fill cases.
 
 ## Safety Boundary
@@ -37,6 +46,8 @@ Never automate:
 - password or login submission
 - CAPTCHA or OTP
 - payment details
+- appointment booking or slot selection
+- page-to-page navigation
 - final application submit
 - government identity verification challenges
 

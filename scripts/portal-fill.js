@@ -35,6 +35,12 @@ const DROPDOWN_OPTION_SELECTORS = [
   ".react-select__option",
   ".mat-mdc-option"
 ];
+const FIELD_CONFIDENCE_THRESHOLD = {
+  default: 0.97,
+  toggle: 0.98,
+  dropdown: 0.99,
+  date: 0.99
+};
 
 function keyOf(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
@@ -259,7 +265,13 @@ const blockedFieldTerms = [
   "payment",
   "amount",
   "submit",
-  "login"
+  "login",
+  "appointment",
+  "appointment time",
+  "appointment date",
+  "slot",
+  "schedule",
+  "visit"
 ];
 
 function normalize(text) {
@@ -284,6 +296,69 @@ function normalizeValue(value) {
 
 function containsDevanagari(value) {
   return /[\u0900-\u097f]/.test(String(value || ""));
+}
+
+function isPlaceholderText(value) {
+  const text = normalizeValue(value).toLowerCase();
+  if (!text) return true;
+  return [
+    "select",
+    "choose",
+    "select one",
+    "choose one",
+    "please select",
+    "please choose",
+    "--select--",
+    "---select---",
+    "tap to select",
+    "pick one"
+  ].some((placeholder) => text === placeholder || text.startsWith(`${placeholder} `));
+}
+
+function getFieldConfidence(values, key) {
+  const confidence = Number(values?.field_confidence?.[key]);
+  return Number.isFinite(confidence) ? confidence : null;
+}
+
+function getFieldSource(values, key) {
+  return String(values?.field_sources?.[key] || "").toLowerCase();
+}
+
+function minimumConfidenceForKey(key, input) {
+  if (input?.type === "radio" || input?.type === "checkbox") return FIELD_CONFIDENCE_THRESHOLD.toggle;
+  if (input?.kind === "mat-select" || input?.kind === "listbox" || input?.kind === "combobox" || input?.tag === "select") return FIELD_CONFIDENCE_THRESHOLD.dropdown;
+  if (isDateKey(key)) return FIELD_CONFIDENCE_THRESHOLD.date;
+  return FIELD_CONFIDENCE_THRESHOLD.default;
+}
+
+function hasSufficientFieldConfidence(values, key, input) {
+  const confidence = getFieldConfidence(values, key);
+  if (!Number.isFinite(confidence)) return false;
+  if (getFieldSource(values, key) === "inferred") return false;
+  return confidence >= minimumConfidenceForKey(key, input);
+}
+
+function safeText(value) {
+  return JSON.stringify(String(value || ""));
+}
+
+const runLogs = [];
+function logEvent(level, message, details = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    ...details
+  };
+  runLogs.push(entry);
+  const output = JSON.stringify(entry);
+  if (level === "error") {
+    console.error(output);
+  } else if (level === "warn") {
+    console.warn(output);
+  } else {
+    console.log(output);
+  }
 }
 
 function normalizePortalValue(key, value) {
@@ -436,14 +511,34 @@ function optionTerms(key, value) {
   return [...new Set(terms.filter(Boolean))];
 }
 
-function optionTextMatches(key, value, optionText) {
+function dropdownMatchInfo(key, value, optionText) {
   const haystack = normalizeValue(containsDevanagari(optionText) ? transliterate(optionText) : optionText).toLowerCase();
-  if (!haystack) return false;
-  return optionTerms(key, value).some((term) => {
-    if (!term) return false;
-    if (term.length === 1) return haystack.split(/\W+/).includes(term);
-    return haystack.includes(term) || term.includes(haystack);
-  });
+  if (!haystack) return { matched: false, exact: false, score: 0 };
+  const terms = optionTerms(key, value).map((term) => normalizeValue(term).toLowerCase()).filter(Boolean);
+  const containsWholePhrase = (text, term) => {
+    if (!text || !term) return false;
+    if (text === term) return true;
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|\\s)${escaped}($|\\s)`).test(text);
+  };
+  for (const term of terms) {
+    if (haystack === term) return { matched: true, exact: true, score: 1 };
+    if (term.length >= 2 && containsWholePhrase(haystack, term)) return { matched: true, exact: true, score: 0.99 };
+  }
+  let bestScore = 0;
+  for (const term of terms) {
+    const score = Math.max(similarity(haystack, term), similarity(compactKey(haystack), compactKey(term)));
+    if (score > bestScore) bestScore = score;
+  }
+  return {
+    matched: bestScore >= 0.98,
+    exact: false,
+    score: bestScore
+  };
+}
+
+function optionTextMatches(key, value, optionText) {
+  return dropdownMatchInfo(key, value, optionText).matched;
 }
 
 function sleep(ms) {
@@ -570,24 +665,52 @@ async function readInputs(page) {
 function findMatches(inputs, values) {
   const used = new Set();
   const matches = [];
-  for (const [key, value] of Object.entries(expandValues(values))) {
+  const skipped = [];
+  const expanded = expandValues(values);
+  for (const [key, value] of Object.entries(expanded)) {
     if (!value) continue;
-    if (String(key).startsWith("appointment_")) continue;
-    const confidence = Number(values?.field_confidence?.[key]);
-    if (Number.isFinite(confidence) && confidence < 0.95) continue;
+    if (String(key).startsWith("appointment_")) {
+      skipped.push({ key, reason: "appointment_manual" });
+      continue;
+    }
+    const confidence = getFieldConfidence(values, key);
+    const source = getFieldSource(values, key);
+    if (!Number.isFinite(confidence)) {
+      skipped.push({ key, reason: "missing_confidence" });
+      continue;
+    }
+    if (confidence < minimumConfidenceForKey(key)) {
+      skipped.push({ key, reason: "low_confidence", confidence });
+      continue;
+    }
+    if (source === "inferred") {
+      skipped.push({ key, reason: "inferred_source", confidence });
+      continue;
+    }
     let best = null;
     for (const input of inputs) {
       if (used.has(input.index)) continue;
+      if (isSensitiveInput(input)) continue;
+      if (String(input.name || input.id || input.placeholder || input.label || input.nearbyText || "").toLowerCase().includes("appointment")) {
+        continue;
+      }
       let score = scoreInput(input, key);
       if (["radio", "checkbox"].includes(input.type) && !toggleOptionMatches(input, key, value)) score = 0;
       if (["radio", "checkbox"].includes(input.type) && toggleOptionMatches(input, key, value)) score += 100;
       if (score > 0 && (!best || score > best.score)) best = { ...input, key, value, score };
     }
-    if (!best || isSensitiveInput(best)) continue;
+    if (!best || isSensitiveInput(best)) {
+      skipped.push({ key, reason: "no_safe_visible_field", confidence });
+      continue;
+    }
+    if (!hasSufficientFieldConfidence(values, key, best)) {
+      skipped.push({ key, reason: "control_requires_higher_confidence", confidence });
+      continue;
+    }
     used.add(best.index);
     matches.push(best);
   }
-  return matches;
+  return { matches, skipped };
 }
 
 function toggleOptionMatches(input, key, value) {
@@ -702,13 +825,51 @@ function fieldSignature(page, input, key) {
   return [
     page.url(),
     key,
-    input.index,
     input.name,
     input.id,
     input.placeholder,
     input.label,
-    input.kind
+    input.kind,
+    input.type
   ].map((part) => normalize(part)).join("|");
+}
+
+async function isFieldManuallyFilled(locator, kind) {
+  return locator.evaluate((node, fieldKind) => {
+    const looksPlaceholder = (value) => {
+      const text = String(value || "").trim().toLowerCase();
+      if (!text) return true;
+      return [
+        "select",
+        "choose",
+        "select one",
+        "choose one",
+        "please select",
+        "please choose",
+        "--select--",
+        "---select---",
+        "tap to select",
+        "pick one"
+      ].some((placeholder) => text === placeholder || text.startsWith(`${placeholder} `));
+    };
+    if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) {
+      const value = String(node.value || "").trim();
+      if (!value) return false;
+      if (node instanceof HTMLInputElement && ["checkbox", "radio"].includes(node.type)) return Boolean(node.checked);
+      return true;
+    }
+    if (node instanceof HTMLSelectElement) {
+      const selected = node.options[node.selectedIndex];
+      const text = String(selected?.textContent || selected?.label || selected?.value || "").trim();
+      return Boolean(text) && !looksPlaceholder(text);
+    }
+    const text = String(node.innerText || node.textContent || "").trim();
+    if (!text) return false;
+    if (fieldKind === "mat-select" || fieldKind === "listbox" || fieldKind === "combobox") {
+      return !looksPlaceholder(text);
+    }
+    return true;
+  }, kind).catch(() => false);
 }
 
 function passportTypeTerms(value) {
@@ -774,6 +935,35 @@ async function valueLooksSet(locator, expectedValue) {
   return Boolean(normalizedActual && (normalizedActual === normalizedExpected || normalizedActual.includes(normalizedExpected)));
 }
 
+function dateCandidateValues(value, inputMeta = {}) {
+  const parts = parseDateParts(value);
+  if (!parts) return [];
+  const day = String(Number(parts.day)).padStart(2, "0");
+  const month = String(Number(parts.month)).padStart(2, "0");
+  const year = String(parts.year);
+  const slash = `${day}/${month}/${year}`;
+  const dash = `${day}-${month}-${year}`;
+  const iso = `${year}-${month}-${day}`;
+  const dot = `${day}.${month}.${year}`;
+  const normalizedHint = normalize([
+    inputMeta.placeholder,
+    inputMeta.label,
+    inputMeta.ariaLabel,
+    inputMeta.name,
+    inputMeta.id,
+    inputMeta.kind
+  ].join(" "));
+  const candidates = [];
+  if (inputMeta.type === "date" || normalizedHint.includes("yyyy") || normalizedHint.includes("year")) {
+    candidates.push(iso, slash, dash, dot);
+  } else if (normalizedHint.includes("/") || normalizedHint.includes("dd/mm") || normalizedHint.includes("date")) {
+    candidates.push(slash, dash, iso, dot);
+  } else {
+    candidates.push(dash, slash, iso, dot);
+  }
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 async function setNativeInputValue(locator, value) {
   return locator.evaluate((node, nextValue) => {
     if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)) return false;
@@ -832,16 +1022,19 @@ async function openDateWidget(page, locator) {
   return false;
 }
 
-async function clickFirstVisible(page, selectors, text) {
+async function clickExactVisible(page, selectors, text) {
   const normalizedText = normalizeValue(text);
   for (const selector of selectors) {
-    const locator = page.locator(selector).filter({ hasText: normalizedText });
+    const locator = page.locator(selector);
     const count = await locator.count().catch(() => 0);
     for (let index = 0; index < Math.min(count, 8); index += 1) {
       const option = locator.nth(index);
       if (await option.isVisible().catch(() => false)) {
-        await option.click({ timeout: 900 }).catch(() => null);
-        return true;
+        const textContent = normalizeValue(await option.innerText({ timeout: 700 }).catch(() => option.textContent({ timeout: 700 }).catch(() => "")));
+        if (textContent && (textContent === normalizedText || textContent.includes(normalizedText) || normalizedText.includes(textContent))) {
+          await option.click({ timeout: 900 }).catch(() => null);
+          return true;
+        }
       }
     }
   }
@@ -849,17 +1042,38 @@ async function clickFirstVisible(page, selectors, text) {
 }
 
 async function selectVisibleOption(page, selectors, value) {
+  const normalizedValue = normalizeValue(value);
   for (const selector of selectors) {
     const locator = page.locator(selector);
     const count = await locator.count().catch(() => 0);
     for (let index = 0; index < Math.min(count, 8); index += 1) {
       const option = locator.nth(index);
       if (!(await option.isVisible().catch(() => false))) continue;
-      const ok = await option
-        .selectOption({ label: value }, { timeout: 700 })
-        .then(() => true)
-        .catch(() => option.selectOption(value, { timeout: 700 }).then(() => true).catch(() => false));
-      if (ok) return true;
+      const tag = await option.evaluate((node) => node.tagName.toLowerCase()).catch(() => "");
+      if (tag === "select") {
+        const choices = await option.evaluate((node) => Array.from(node.options).map((entry) => ({
+          value: entry.value,
+          label: entry.label || "",
+          text: entry.textContent || ""
+        }))).catch(() => []);
+        for (const choice of choices || []) {
+          const label = normalizeValue(choice.label || choice.text || choice.value);
+          const valueText = normalizeValue(choice.value || "");
+          if (label === normalizedValue || valueText === normalizedValue) {
+            const ok = await option
+              .selectOption({ value: choice.value }, { timeout: 700 })
+              .then(() => true)
+              .catch(() => option.selectOption({ label: choice.label }, { timeout: 700 }).then(() => true).catch(() => false));
+            if (ok) return true;
+          }
+        }
+      } else {
+        const textContent = normalizeValue(await option.innerText({ timeout: 700 }).catch(() => option.textContent({ timeout: 700 }).catch(() => "")));
+        if (textContent && (textContent === normalizedValue || textContent.includes(normalizedValue) || normalizedValue.includes(textContent))) {
+          const clicked = await option.click({ timeout: 900 }).then(() => true).catch(() => false);
+          if (clicked) return true;
+        }
+      }
     }
   }
   return false;
@@ -875,11 +1089,10 @@ async function fillSelect(locator, key, value) {
       text: option.textContent || "",
     }));
   }).catch(() => []);
-
-  const terms = optionTerms(key, normalizedValue);
   for (const option of options || []) {
     const optionText = normalizeValue(containsDevanagari([option.value, option.label, option.text].join(" ")) ? transliterate([option.value, option.label, option.text].join(" ")) : [option.value, option.label, option.text].join(" "));
-    if (optionText === normalizedValue || optionText === normalizeValue(containsDevanagari(normalizedValue) ? transliterate(normalizedValue) : normalizedValue) || terms.some((term) => term && optionText === term)) {
+    const match = dropdownMatchInfo(key, normalizedValue, optionText);
+    if (match.matched && (match.exact || match.score >= 0.98)) {
       return locator
         .selectOption(option.value, { timeout: 700 })
         .then(() => true)
@@ -913,26 +1126,9 @@ async function openDropdown(locator) {
   return locator.press("Space", { timeoutMs: 1200 }).then(() => true).catch(() => false);
 }
 
-async function searchOption(page, panel, value) {
-  const searchFields = panel
-    ? panel.locator("input:not([type=hidden]), textarea, [role='textbox']")
-    : page.locator("input[placeholder*='search' i], input[aria-label*='search' i], [role='textbox']");
-  const count = await searchFields.count().catch(() => 0);
-  for (let index = 0; index < Math.min(count, 4); index += 1) {
-    const field = searchFields.nth(index);
-    if (!(await field.isVisible().catch(() => false))) continue;
-    if (!(await field.isEnabled().catch(() => false))) continue;
-    const text = normalizeValue(value);
-    await field.fill(text, { timeout: 800 }).catch(() => null);
-    return true;
-  }
-  return false;
-}
-
 async function selectDropdownOption(page, locator, key, value) {
   const panel = await waitForDropdownOptions(page, 3000);
   if (!panel) return false;
-  await searchOption(page, panel, value);
   const optionLocator = panel.locator(DROPDOWN_OPTION_SELECTORS.join(", "));
   const count = await optionLocator.count().catch(() => 0);
   for (let index = 0; index < Math.min(count, 50); index += 1) {
@@ -940,7 +1136,8 @@ async function selectDropdownOption(page, locator, key, value) {
     if (!(await option.isVisible().catch(() => false))) continue;
     const text = normalizeValue(await option.innerText({ timeoutMs: 700 }).catch(() => option.textContent({ timeoutMs: 700 }).catch(() => "")));
     if (!text) continue;
-    if (optionTextMatches(key, value, text) || normalize(text) === normalize(value) || normalize(text) === normalize(containsDevanagari(value) ? transliterate(value) : value)) {
+    const match = dropdownMatchInfo(key, value, text);
+    if (match.matched && (match.exact || match.score >= 0.98)) {
       const clicked = await option.click({ timeout: 1200 }).then(() => true).catch(() => false);
       if (!clicked) return false;
       await sleep(350);
@@ -954,10 +1151,20 @@ async function selectDropdownOption(page, locator, key, value) {
 }
 
 async function fillDropdown(page, locator, key, value) {
-  const currentText = await locator.innerText({ timeoutMs: 700 }).catch(() => "");
-  if (normalizeValue(currentText) && optionTextMatches(key, value, currentText)) return true;
   const isNativeSelect = await locator.evaluate((node) => node instanceof HTMLSelectElement).catch(() => false);
-  if (isNativeSelect) return fillSelect(locator, key, value);
+  if (isNativeSelect) {
+    const currentSelected = await locator.evaluate((node) => {
+      if (!(node instanceof HTMLSelectElement)) return "";
+      const selected = node.options[node.selectedIndex];
+      return String(selected?.textContent || selected?.label || selected?.value || "").trim();
+    }).catch(() => "");
+    const currentMatch = dropdownMatchInfo(key, value, currentSelected);
+    if (currentSelected && currentMatch.matched && currentMatch.exact) return true;
+    return fillSelect(locator, key, value);
+  }
+  const currentText = await locator.innerText({ timeoutMs: 700 }).catch(() => "");
+  const currentMatch = dropdownMatchInfo(key, value, currentText);
+  if (normalizeValue(currentText) && currentMatch.matched && currentMatch.exact) return true;
   const opened = await openDropdown(locator);
   if (!opened) return false;
   const selected = await selectDropdownOption(page, locator, key, value);
@@ -1018,21 +1225,19 @@ async function fillCalendarWidget(page, locator, value) {
     "select[aria-label*='वर्ष' i]",
     "select[title*='year' i]",
     ".mat-calendar-period-button",
-    ".datepicker-years button",
-    ".bs-datepicker-head button",
-    ".calendar-years button",
-    ".flatpickr-current-month",
-    "button"
+    ".datepicker-years select",
+    ".bs-datepicker-head select",
+    ".calendar-years select",
+    ".flatpickr-current-month"
   ];
   const monthSelectors = [
     "select[aria-label*='month' i]",
     "select[aria-label*='महिना' i]",
     "select[title*='month' i]",
-    ".datepicker-months button",
-    ".bs-datepicker-head button",
-    ".calendar-months button",
-    ".flatpickr-monthDropdown-months",
-    "button"
+    ".datepicker-months select",
+    ".bs-datepicker-head select",
+    ".calendar-months select",
+    ".flatpickr-monthDropdown-months"
   ];
   const daySelectors = [
     ".mat-calendar-body-cell:not(.mat-calendar-body-disabled)",
@@ -1040,38 +1245,61 @@ async function fillCalendarWidget(page, locator, value) {
     ".bs-datepicker-body td:not(.disabled)",
     ".flatpickr-day:not(.flatpickr-disabled)",
     ".react-datepicker__day:not(.react-datepicker__day--disabled)",
-    ".calendar-days button",
-    "button"
+    ".calendar-days td:not(.disabled)"
   ];
 
-  await selectVisibleOption(popupScope, yearSelectors, parts.year) || await clickFirstVisible(popupScope, yearSelectors, parts.year);
+  await selectVisibleOption(popupScope, yearSelectors, parts.year) || await clickExactVisible(popupScope, yearSelectors, parts.year);
   await sleep(150);
   for (const monthCandidate of monthCandidates(parts.month)) {
-    if (await selectVisibleOption(popupScope, monthSelectors, monthCandidate) || await clickFirstVisible(popupScope, monthSelectors, monthCandidate)) break;
+    if (await selectVisibleOption(popupScope, monthSelectors, monthCandidate) || await clickExactVisible(popupScope, monthSelectors, monthCandidate)) break;
   }
   await sleep(150);
-  await clickFirstVisible(popupScope, daySelectors, String(Number(parts.day)));
+  await clickExactVisible(popupScope, daySelectors, String(Number(parts.day)));
   await sleep(200);
 
   if (await valueLooksSet(locator, value)) return true;
-  return setNativeInputValue(locator, normalizeDateForInput(value));
+  return false;
 }
 
-async function fillTextOrDate(page, locator, key, value) {
+async function fillTextOrDate(page, locator, key, value, inputMeta = {}) {
   const fillValue = isDateKey(key) ? normalizeDateForInput(value) : normalizeValue(value);
   try {
-    await locator.fill(fillValue, { timeout: 1500 });
-    if (!isDateKey(key) || await valueLooksSet(locator, fillValue)) return true;
+    await locator.focus({ timeout: 1200 }).catch(() => null);
+    if (isDateKey(key)) {
+      for (const candidate of dateCandidateValues(fillValue, inputMeta)) {
+        const typed = await setNativeInputValue(locator, candidate);
+        if (typed && await valueLooksSet(locator, candidate)) return true;
+      }
+    } else {
+      await locator.fill(fillValue, { timeout: 1500 });
+      if (await locator.evaluate((node) => String(node.value || node.textContent || "").trim()).catch(() => "")) return true;
+    }
   } catch {
     // Readonly date fields often open a calendar instead of accepting typing.
   }
   if (isDateKey(key) && await fillCalendarWidget(page, locator, fillValue)) return true;
-  return setNativeInputValue(locator, fillValue);
+  if (isDateKey(key)) {
+    await setNativeInputValue(locator, "");
+    return false;
+  }
+  if (await setNativeInputValue(locator, fillValue)) {
+    return valueLooksSet(locator, fillValue);
+  }
+  return false;
 }
 
 async function fillPage(page, values, filledTargets) {
   const inputs = await readInputs(page);
-  const matches = findMatches(inputs, values).sort((left, right) => {
+  const matchResult = findMatches(inputs, values);
+  for (const skipped of matchResult.skipped || []) {
+    logEvent("info", "field_skipped", {
+      key: skipped.key,
+      reason: skipped.reason,
+      confidence: skipped.confidence ?? null,
+      url: page.url()
+    });
+  }
+  const matches = matchResult.matches.sort((left, right) => {
     const priority = {
       country: 1,
       passport_type: 2,
@@ -1105,36 +1333,88 @@ async function fillPage(page, values, filledTargets) {
   const inputLocator = page.locator(PORTAL_CONTROL_SELECTOR);
   const filled = [];
   const failed = [];
+  const skipped = [...(matchResult.skipped || [])];
 
   for (const best of matches) {
     const signature = fieldSignature(page, best, best.key);
     if (filledTargets.has(signature) || isSensitiveInput(best)) continue;
     const locator = inputLocator.nth(best.index);
     try {
+      const alreadyFilled = await isFieldManuallyFilled(locator, best.kind || best.tag || "").catch(() => false);
+      if (alreadyFilled) {
+        skipped.push({
+          key: best.key,
+          reason: "already_has_value",
+          matched: best.name || best.id || best.placeholder || best.label || "",
+          url: page.url()
+        });
+        logEvent("info", "skipping_manual_value", {
+          key: best.key,
+          matched: best.name || best.id || best.placeholder || best.label || "",
+          url: page.url()
+        });
+        continue;
+      }
+      if (!hasSufficientFieldConfidence(values, best.key, best)) {
+        skipped.push({
+          key: best.key,
+          reason: "control_requires_higher_confidence",
+          confidence: getFieldConfidence(values, best.key),
+          matched: best.name || best.id || best.placeholder || best.label || "",
+          url: page.url()
+        });
+        logEvent("warn", "skipping_low_confidence", {
+          key: best.key,
+          confidence: getFieldConfidence(values, best.key),
+          matched: best.name || best.id || best.placeholder || best.label || "",
+          url: page.url()
+        });
+        continue;
+      }
       let didFill = false;
       if (best.type === "radio" || best.type === "checkbox") {
         didFill = await fillToggle(page, locator, best.key, best.value);
       } else if (best.kind === "mat-select" || best.kind === "listbox" || best.kind === "combobox" || best.tag === "select") {
         didFill = await fillDropdown(page, locator, best.key, best.value);
       } else {
-        didFill = await fillTextOrDate(page, locator, best.key, best.value);
+        didFill = await fillTextOrDate(page, locator, best.key, best.value, best);
       }
-      if (!didFill) continue;
+      if (!didFill) {
+        const warning = {
+          key: best.key,
+          value: best.value,
+          matched: best.name || best.id || best.placeholder || best.label,
+          kind: best.kind || best.tag || "",
+          url: page.url()
+        };
+        failed.push(warning);
+        logEvent("warn", "field_not_filled", warning);
+        continue;
+      }
       filledTargets.add(signature);
-      filled.push({ key: best.key, value: best.value, matched: best.name || best.id || best.placeholder || best.label, url: page.url() });
-      await sleep(300 + Math.floor(Math.random() * 500));
+      const entry = { key: best.key, value: best.value, matched: best.name || best.id || best.placeholder || best.label, url: page.url() };
+      filled.push(entry);
+      logEvent("success", "field_filled", {
+        key: best.key,
+        matched: entry.matched,
+        value: best.value,
+        url: page.url()
+      });
+      await sleep(350);
     } catch {
-      failed.push({
+      const failure = {
         key: best.key,
         value: best.value,
         matched: best.name || best.id || best.placeholder || best.label,
         kind: best.kind || best.tag || "",
         url: page.url()
-      });
+      };
+      failed.push(failure);
+      logEvent("error", "field_fill_failed", failure);
     }
   }
 
-  return { filled, failed };
+  return { filled, failed, skipped };
 }
 
 async function watchAndFillPortal(context, values, timeoutMs) {
@@ -1142,6 +1422,7 @@ async function watchAndFillPortal(context, values, timeoutMs) {
   const filledTargets = new Set();
   const filled = [];
   const failed = [];
+  const skipped = [];
 
   while (Date.now() < deadline) {
     for (const page of context.pages()) {
@@ -1150,6 +1431,7 @@ async function watchAndFillPortal(context, values, timeoutMs) {
         const pageResult = await fillPage(page, values, filledTargets);
         filled.push(...pageResult.filled);
         failed.push(...pageResult.failed);
+        skipped.push(...(pageResult.skipped || []));
       } catch {
         // Pages can navigate, reload, or close between checks. Keep watching.
       }
@@ -1157,7 +1439,7 @@ async function watchAndFillPortal(context, values, timeoutMs) {
     await sleep(900);
   }
 
-  return { filled, failed };
+  return { filled, failed, skipped };
 }
 
 async function main() {
@@ -1188,24 +1470,35 @@ async function main() {
 
     const filled = result.filled || [];
     const failed = result.failed || [];
+    const skipped = result.skipped || [];
     const dropdownFailures = failed.filter((entry) => ["mat-select", "listbox", "combobox", "select"].includes(String(entry.kind || "").toLowerCase()));
     const dateFailures = failed.filter((entry) => isDateKey(entry.key));
     const foundCount = filled.length + failed.length;
     const completionPercent = foundCount ? Math.round((filled.length / foundCount) * 100) : 0;
+    logEvent("info", "run_completed", {
+      filled_count: filled.length,
+      failed_count: failed.length,
+      completion_percent: completionPercent,
+      url: payload.url
+    });
     const report = {
       generated_at: new Date().toISOString(),
       url: payload.url,
       status: "open_for_review",
       filled_count: filled.length,
       failed_count: failed.length,
+      skipped_count: skipped.length,
       completion_percent: completionPercent,
       found_count: foundCount,
       filled,
       failed,
+      skipped,
       dropdown_failures: dropdownFailures,
       date_failures: dateFailures,
+      log_count: runLogs.length,
+      logs: runLogs,
       note: filled.length
-        ? "Autofill watched the connected browser and filled safe fields across available form pages. Review each page before continuing or submitting."
+        ? "Autofill watched the connected browser and filled only high-confidence safe fields across available form pages. Review each page before continuing or submitting."
         : "No fillable target fields were found before the watch timeout. Keep the connected Chrome page open, navigate to the exact form page, and run autofill again."
     };
 
@@ -1214,7 +1507,6 @@ async function main() {
     } catch {
       // Best-effort report persistence.
     }
-
     console.log(JSON.stringify(report));
   } finally {
     await context?.close().catch(() => null);

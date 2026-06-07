@@ -100,6 +100,8 @@ FIELD_LABELS = {
     "spouse_name": ("Spouse name", "पति/पत्नीको नाम"),
     "blood_group": ("Blood group", "रक्त समूह"),
     "issued_district": ("Issued district", "जारी जिल्ला"),
+    "citizenship_issue_district": ("Citizenship issue district", "नागरिकता जारी जिल्ला"),
+    "issue_place": ("Issuing office", "जारी कार्यालय"),
     "issued_date": ("Issued date", "जारी मिति"),
     "expiry_date": ("Expiry / valid until", "मान्य मिति"),
     "passport_type": ("Passport type", "राहदानीको किसिम"),
@@ -142,9 +144,12 @@ The files may include Nepali citizenship, NID, previous passport, supporting ide
 Use exact visible values whenever possible. Combine data across all files.
 Normalize dates exactly as visible when you cannot confidently convert between B.S. and A.D.
 Focus on the values needed to autofill the Nepal ePassport online pre-enrollment form.
-Keep english-name fields in Latin script when the source shows Latin text. For full_name_english, father_name, mother_name, spouse_name, birth_place, and issued_district, do not place Devanagari there unless no Latin version is visible.
+Keep english-name fields in Latin script when the source shows Latin text. For full_name_english, father_name, mother_name, spouse_name, birth_place, issued_district, citizenship_issue_district, and issue_place, do not place Devanagari there unless no Latin version is visible.
+Use Nepali text as the primary source of truth for citizenship address labels, district, municipality, ward, issued district, and issuing office when both Nepali and English text are present.
+Return only values that are visible in the uploaded documents. Do not guess missing values. If a field is uncertain, return null for the field and add a short note to validation_warnings.
+Distinguish birth_place, permanent_address, issued_district, citizenship_issue_district, and issue_place. Never substitute one for another.
 Return the most complete passport-related profile you can from the packet. Include province, nationality, marital_status, occupation, issue_place, citizenship_issue_district, permanent_address, temporary_address, contact details, and any other visible passport-relevant field.
-Also include field_confidence as a JSON object with scores between 0 and 1, and validation_warnings as a list of short notes when a field is uncertain or inferred.
+Also include field_confidence as a JSON object with scores between 0 and 1, and validation_warnings as a list of short notes when a field is uncertain, missing, or conflicts with another field.
 Return this shape:
 {
   "id_type": "CITIZENSHIP" or "NID",
@@ -678,7 +683,7 @@ def unified_master(id_type: str, data: dict[str, Any]) -> dict[str, Any]:
         "nid_number": data.get("nid_number") if id_type == "NID" else None,
         "id_type": id_type,
         "issued_district": data.get("issued_district"),
-        "citizenship_issue_district": data.get("citizenship_issue_district") or data.get("issued_district"),
+        "citizenship_issue_district": data.get("citizenship_issue_district"),
         "issue_place": data.get("issue_place"),
         "issued_date": data.get("issued_date"),
         "expiry_date": data.get("expiry_date"),
@@ -795,6 +800,7 @@ async def extract(files: list[UploadFile] = File(...), form_type: str = Form(...
     id_type = normalize_id_type(extracted.get("id_type") or "")
     master = unified_master(id_type, extracted)
     normalized_master = normalize_profile(master, extracted, id_type)
+    normalized_master.pop("raw_text", None)
     return {"id_type": id_type, "master_data": normalized_master}
 
 
@@ -919,6 +925,8 @@ def mock_citizenship_json() -> dict[str, Any]:
         "permanent_address": {"district": "Kathmandu", "municipality": "Kathmandu Metropolitan City", "ward": "12"},
         "citizenship_number": "27-01-78-12345",
         "issued_district": "Kathmandu",
+        "citizenship_issue_district": "Kathmandu",
+        "issue_place": "District Administration Office, Kathmandu",
         "issued_date": "2078-03-20",
         "expiry_date": None,
         "father_name": "Ram Shrestha",
