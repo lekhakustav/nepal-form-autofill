@@ -915,6 +915,25 @@ h1 {
   border: 1px solid #bce7cd;
 }
 
+.report-box {
+  margin-top: 10px;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fbff;
+  border: 1px solid #cfd8ea;
+  color: #17315f;
+  display: grid;
+  gap: 6px;
+}
+
+.report-box p {
+  margin: 0;
+}
+
+.report-box .secondary {
+  justify-self: start;
+}
+
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

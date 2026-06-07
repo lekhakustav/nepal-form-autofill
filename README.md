@@ -17,33 +17,87 @@ AI-assisted local passport application autofill for Nepal ePassport workflows.
 
 ## Run locally
 
-Backend:
+### Windows PowerShell
 
 ```powershell
-cd backend
-python -m venv .venv
+git clone https://github.com/lekhakustav/nepal-form-autofill.git
+cd nepal-form-autofill
+
+npm install
+
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
+pip install -r backend\requirements.txt
+```
+
+Create `backend\.env` from `backend\.env.example` and add:
+
+```env
+GEMINI_API_KEY=your_real_key_here
+GEMINI_MODEL=gemini-3.5-flash
+ALLOWED_ORIGINS=http://127.0.0.1:5174,http://localhost:5174
+GEMINI_REQUESTS_PER_MINUTE=15
+USE_MOCK_AI=false
+```
+
+Start the backend:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Start the frontend in a second PowerShell window:
+
+```powershell
+npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
+```
+
+Or use the one-command local launcher:
+
+```powershell
+npm run start:local
+```
+
+### macOS / Linux
+
+```bash
+git clone https://github.com/lekhakustav/nepal-form-autofill.git
+cd nepal-form-autofill
+
+npm install
+
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
 ```
 
 Create `backend/.env` from `backend/.env.example` and add:
 
-```powershell
-GEMINI_API_KEY=your-google-ai-studio-key
+```env
+GEMINI_API_KEY=your_real_key_here
 GEMINI_MODEL=gemini-3.5-flash
+ALLOWED_ORIGINS=http://127.0.0.1:5174,http://localhost:5174
+GEMINI_REQUESTS_PER_MINUTE=15
+USE_MOCK_AI=false
 ```
 
-Frontend:
+Start the backend:
 
-```powershell
-npm install
-npm run dev
+```bash
+source .venv/bin/activate
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:5174` when using `npm run start:local`.
+Start the frontend in a second terminal:
 
-Portal autofill needs Node.js dependencies installed with `npm install` and a local Chrome, Edge, or Brave browser. It does not use a browser extension and does not click final submit buttons, CAPTCHA, OTP, password, login, or payment controls.
+```bash
+npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
+```
+
+Open `http://127.0.0.1:5174/`.
+
+Portal autofill needs Node.js dependencies installed with `npm install` and a local Chrome, Edge, or Brave browser. It does not use a browser extension and does not click final submit buttons, CAPTCHA, OTP, password, login, or payment controls. The autofill runs on the same machine as the browser and is review-only.
 
 ## Production env
 

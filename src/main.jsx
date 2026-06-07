@@ -32,14 +32,23 @@ const fieldLabels = {
   full_name_nepali: ["Name in Nepali", "नेपाली नाम"],
   date_of_birth: ["Date of birth", "जन्म मिति"],
   gender: ["Gender", "लिङ्ग"],
+  nationality: ["Nationality", "राष्ट्रियता"],
+  marital_status: ["Marital status", "वैवाहिक स्थिति"],
+  province: ["Province", "प्रदेश"],
   address_district: ["District", "जिल्ला"],
   address_municipality: ["Municipality / Rural Municipality", "पालिका"],
   address_ward: ["Ward no.", "वडा नं."],
+  temporary_address_district: ["Temporary district", "अस्थायी जिल्ला"],
+  temporary_address_municipality: ["Temporary municipality", "अस्थायी पालिका"],
+  temporary_address_ward: ["Temporary ward", "अस्थायी वडा"],
   id_number: ["Citizenship / NID number", "नागरिकता / राष्ट्रिय परिचयपत्र नं."],
+  citizenship_issue_district: ["Citizenship issue district", "नागरिकता जारी जिल्ला"],
+  issue_place: ["Issue place", "जारी स्थान"],
   father_name: ["Father's name", "बुबाको नाम"],
   mother_name: ["Mother's name", "आमाको नाम"],
   grandfather_name: ["Grandfather's name", "हजुरबुबाको नाम"],
   spouse_name: ["Spouse name", "पति / पत्नीको नाम"],
+  occupation: ["Occupation", "पेशा"],
   blood_group: ["Blood group", "रक्त समूह"],
   issued_district: ["Issued district", "जारी जिल्ला"],
   issued_date: ["Issued date", "जारी मिति"],
@@ -55,7 +64,6 @@ const fieldLabels = {
   account_currency: ["Currency", "मुद्रा"],
   phone: ["Mobile number", "मोबाइल नं."],
   email: ["Email address", "इमेल"],
-  occupation: ["Occupation", "पेशा"],
   income_source: ["Source of income", "आय स्रोत"],
   education_level: ["Education level", "शैक्षिक योग्यता"],
   institution_name: ["Institution name", "संस्थाको नाम"],
@@ -74,7 +82,7 @@ const fieldLabels = {
 };
 
 const formConfigs = {
-  passport: ["application_type", "passport_type", "full_name_english", "full_name_nepali", "date_of_birth", "issued_date", "expiry_date", "birth_place", "gender", "address_district", "address_municipality", "address_ward", "id_number", "issued_district", "father_name", "mother_name", "spouse_name", "old_passport_number", "phone", "email"],
+  passport: ["application_type", "passport_type", "full_name_english", "full_name_nepali", "nationality", "marital_status", "date_of_birth", "birth_place", "gender", "province", "address_district", "address_municipality", "address_ward", "temporary_address_district", "temporary_address_municipality", "temporary_address_ward", "id_number", "citizenship_issue_district", "issue_place", "issued_district", "issued_date", "expiry_date", "father_name", "mother_name", "grandfather_name", "spouse_name", "occupation", "old_passport_number", "phone", "email"],
   driving_license: ["application_type", "license_category", "vehicle_type", "full_name_english", "full_name_nepali", "date_of_birth", "issued_date", "expiry_date", "gender", "address_district", "address_municipality", "address_ward", "id_number", "issued_district", "father_name", "mother_name", "blood_group", "training_center", "phone", "email"],
   bank_account: ["bank_branch", "account_type", "account_currency", "full_name_english", "full_name_nepali", "date_of_birth", "issued_date", "expiry_date", "gender", "address_district", "address_municipality", "address_ward", "id_number", "issued_district", "father_name", "mother_name", "occupation", "income_source", "phone", "email"],
   admission: ["institution_name", "program", "faculty", "level", "full_name_english", "full_name_nepali", "date_of_birth", "issued_date", "expiry_date", "gender", "address_district", "address_municipality", "address_ward", "id_number", "issued_district", "father_name", "mother_name", "guardian_name", "education_level", "phone", "email"],
@@ -89,9 +97,11 @@ const sheetTemplates = {
     note: "Machine readable / e-passport applicant details",
     sections: [
       ["Application Details", ["application_type", "passport_type", "old_passport_number"]],
-      ["Applicant Details", ["full_name_english", "full_name_nepali", "date_of_birth", "birth_place", "gender"]],
-      ["Citizenship / NID Details", ["id_number", "issued_date", "expiry_date", "issued_district", "address_district", "address_municipality", "address_ward"]],
-      ["Family and Contact", ["father_name", "mother_name", "spouse_name", "phone", "email"]]
+      ["Applicant Details", ["full_name_english", "full_name_nepali", "nationality", "marital_status", "date_of_birth", "birth_place", "gender"]],
+      ["Permanent Address", ["province", "address_district", "address_municipality", "address_ward"]],
+      ["Temporary Address", ["temporary_address_district", "temporary_address_municipality", "temporary_address_ward"]],
+      ["Citizenship / NID Details", ["id_number", "citizenship_issue_district", "issue_place", "issued_district", "issued_date", "expiry_date"]],
+      ["Family and Contact", ["father_name", "mother_name", "grandfather_name", "spouse_name", "occupation", "phone", "email"]]
     ]
   },
   driving_license: {
@@ -157,7 +167,15 @@ const sampleMaster = {
   full_name_nepali: "सीता श्रेष्ठ",
   date_of_birth: "2058-04-12",
   gender: "Female",
+  nationality: "Nepali",
+  marital_status: "Unmarried",
+  province: "Bagmati Province",
   permanent_address: {
+    district: "Kathmandu",
+    municipality: "Kathmandu Metropolitan City",
+    ward: "12"
+  },
+  temporary_address: {
     district: "Kathmandu",
     municipality: "Kathmandu Metropolitan City",
     ward: "12"
@@ -165,17 +183,20 @@ const sampleMaster = {
   citizenship_number: "27-01-78-12345",
   nid_number: null,
   issued_district: "Kathmandu",
+  citizenship_issue_district: "Kathmandu",
+  issue_place: "Kathmandu",
   issued_date: "2078-03-20",
   expiry_date: "",
   father_name: "Ram Shrestha",
   mother_name: "Maya Shrestha",
   grandfather_name: "Hari Shrestha",
   spouse_name: "",
-  blood_group: "B+"
+  blood_group: "B+",
+  occupation: "Student"
 };
 
 const defaultsByForm = {
-  passport: { application_type: "New", passport_type: "Ordinary 34 pages", birth_place: "Kathmandu" },
+  passport: { application_type: "New", passport_type: "Ordinary 34 pages", birth_place: "Kathmandu", nationality: "Nepali", marital_status: "Unmarried", province: "Bagmati Province", issue_place: "Kathmandu" },
   driving_license: { application_type: "New", license_category: "A/B", vehicle_type: "Motorcycle / Car", training_center: "Kathmandu" },
   bank_account: { bank_branch: "Kathmandu Main Branch", account_type: "Savings", account_currency: "NPR", occupation: "Student", income_source: "Family support" },
   admission: { institution_name: "Tribhuvan University", program: "Bachelor", faculty: "Management", level: "Undergraduate", guardian_name: "Ram Shrestha", education_level: "+2 Passed" },
@@ -260,14 +281,23 @@ function flattenMaster(master = {}) {
     full_name_nepali: master.full_name_nepali || "",
     date_of_birth: master.date_of_birth || "",
     gender: master.gender || "",
+    nationality: master.nationality || "",
+    marital_status: master.marital_status || "",
+    province: master.province || master.permanent_address?.province || "",
     address_district: master.permanent_address?.district || "",
     address_municipality: master.permanent_address?.municipality || "",
     address_ward: master.permanent_address?.ward || "",
+    temporary_address_district: master.temporary_address?.district || "",
+    temporary_address_municipality: master.temporary_address?.municipality || "",
+    temporary_address_ward: master.temporary_address?.ward || "",
     id_number: master.citizenship_number || master.nid_number || "",
+    citizenship_issue_district: master.citizenship_issue_district || "",
+    issue_place: master.issue_place || "",
     father_name: master.father_name || "",
     mother_name: master.mother_name || "",
     grandfather_name: master.grandfather_name || "",
     spouse_name: master.spouse_name || "",
+    occupation: master.occupation || "",
     blood_group: master.blood_group || "",
     issued_district: master.issued_district || "",
     issued_date: master.issued_date || "",
@@ -321,7 +351,7 @@ function UsagePanel({ usage, onRefresh }) {
         <span><strong>{formatNumber(data.total_tokens)}</strong> total tokens</span>
         <span><strong>{formatNumber(data.pdf_downloads)}</strong> PDFs</span>
         <span><strong>{formatNumber(data.portal_sessions)}</strong> portal sessions</span>
-        <span><strong>{rpmText}</strong> local RPM guard</span>
+        <span><strong>{rpmText}</strong> successful Gemini calls this minute</span>
       </div>
       <div className="usage-links">
         {links.ai_studio_rate_limits && <a href={links.ai_studio_rate_limits} target="_blank" rel="noreferrer"><ExternalLink size={15} /> AI Studio limits</a>}
@@ -342,6 +372,7 @@ function App() {
   const [portalLoading, setPortalLoading] = useState(false);
   const [portalUrl, setPortalUrl] = useState("");
   const [portalResult, setPortalResult] = useState("");
+  const [portalReport, setPortalReport] = useState(null);
   const [error, setError] = useState("");
   const [health, setHealth] = useState(null);
   const [usage, setUsage] = useState(null);
@@ -350,6 +381,7 @@ function App() {
   const [settingsMessage, setSettingsMessage] = useState("");
   const [passportReference, setPassportReference] = useState("");
   const [portalProfile, setPortalProfile] = useState("portal-default");
+  const [debugMode, setDebugMode] = useState(false);
   const uploadRef = useRef(null);
 
   const activeForm = formTypes.find((form) => form.id === selectedForm) || formTypes[0];
@@ -368,10 +400,16 @@ function App() {
     : "Upload passport source photos or PDFs";
   const portalOptions = portalGuides[selectedForm] || [];
   const portalSearch = portalSearches[selectedForm];
+  const fieldConfidence = masterData?.field_confidence || {};
+  const validationWarnings = masterData?.validation_warnings || [];
+  const unmatchedFields = masterData?.unmatched_fields || [];
+  const debugTrace = masterData?.debug_trace || {};
+  const debugRows = Object.entries(debugTrace).map(([field, meta]) => ({ field, ...(meta || {}) }));
 
   useEffect(() => {
     refreshHealth();
     refreshUsage();
+    refreshPortalReport();
   }, []);
 
   useEffect(() => {
@@ -394,6 +432,13 @@ function App() {
       .catch(() => setUsage(null));
   }
 
+  function refreshPortalReport() {
+    return fetch(`${API_BASE}/api/portal/report`)
+      .then((response) => response.json())
+      .then(setPortalReport)
+      .catch(() => setPortalReport(null));
+  }
+
   async function saveGeminiKey() {
     setSettingsSaving(true);
     setSettingsMessage("");
@@ -410,6 +455,7 @@ function App() {
       setSettingsMessage("Gemini scan is ready for image and scanned PDF extraction.");
       await refreshHealth();
       await refreshUsage();
+      await refreshPortalReport();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -512,6 +558,7 @@ function App() {
       if (!response.ok) throw new Error(payload.detail || "Portal autofill failed");
       setPortalResult(payload.message || "Your supported default browser opened. Complete login/CAPTCHA/OTP manually if needed. Autofill will watch for form pages and fill safe visible fields as they appear.");
       await refreshUsage();
+      await refreshPortalReport();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -646,8 +693,14 @@ function App() {
                 {error && <p className="error">{error}</p>}
               </div>
 
-          <div className="reference-panel">
-                <h3>What it fills automatically</h3>
+              <div className="reference-panel">
+                <div className="panel-heading-row">
+                  <h3>What it fills automatically</h3>
+                  <button className={`secondary ${debugMode ? "active" : ""}`} onClick={() => setDebugMode((current) => !current)}>
+                    <Activity size={16} />
+                    Debug mode
+                  </button>
+                </div>
                 {health?.ocr !== "gemini_passport_extraction" && (
                   <div className="key-panel">
                     <h4>Enable Gemini passport scanning</h4>
@@ -699,6 +752,41 @@ function App() {
                   <div className="progress"><i style={{ width: `${completion}%` }} /></div>
                   <small>{missing ? `${missing} fields need a value` : "Ready to download or fill a portal"}</small>
                 </div>
+                {validationWarnings.length > 0 && (
+                  <div className="warning-box">
+                    <strong>Review warnings</strong>
+                    <ul>
+                      {validationWarnings.slice(0, 6).map((warning) => <li key={warning}>{warning}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {unmatchedFields.length > 0 && (
+                  <div className="warning-box subtle">
+                    <strong>Unmatched OCR fields</strong>
+                    <p>{unmatchedFields.slice(0, 8).join(", ")}</p>
+                  </div>
+                )}
+                {debugMode && (
+                  <details className="debug-panel" open>
+                    <summary>Extraction debug</summary>
+                    {masterData.raw_text && (
+                      <div className="debug-block">
+                        <strong>Original OCR text</strong>
+                        <textarea readOnly value={masterData.raw_text} />
+                      </div>
+                    )}
+                    <div className="debug-table">
+                      {debugRows.slice(0, 18).map((row) => (
+                        <div className="debug-row" key={row.field}>
+                          <span className="debug-field">{row.field}</span>
+                          <span className="debug-value">{String(row.original ?? "")}</span>
+                          <span className="debug-value">{String(row.final ?? "")}</span>
+                          <span className="debug-score">{Math.round((Number(row.confidence || 0) * 100))}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
                 <UsagePanel usage={usage} onRefresh={refreshUsage} />
                 <button className="secondary full" onClick={() => setMasterData(null)}>Upload another packet</button>
               </aside>
@@ -721,6 +809,7 @@ function App() {
                         const label = fieldLabels[field] || [field, field];
                         const filled = String(formValues[field] || "").trim();
                         const auto = autoFields[field];
+                        const confidence = fieldConfidence[field];
                         return (
                           <label className={`sheet-cell ${filled ? "filled" : "empty"}`} key={field}>
                             <span className="label-line">{label[0]} <em>{label[1]}</em></span>
@@ -732,7 +821,7 @@ function App() {
                                 setAutoFields((current) => ({ ...current, [field]: current[field] && Boolean(value) }));
                               }}
                             />
-                            <small>{auto ? fillSource : "Please fill manually"}</small>
+                            <small>{auto ? `${fillSource}${confidence ? ` • ${Math.round(confidence * 100)}%` : ""}` : "Please fill manually"}</small>
                           </label>
                         );
                       })}
@@ -754,7 +843,7 @@ function App() {
                 <div className="portal-panel">
                   <div>
                     <h3>Fill an online portal</h3>
-                    <p>Select a portal and start autofill. The app opens the selected portal profile, waits while you manually finish CAPTCHA/login/location, then fills matching safe fields when the real form appears.</p>
+                    <p>Select a portal and start autofill. The app opens the selected portal profile, fills only the current page after OCR is ready, and waits for you to manually navigate to the next page. It never clicks Next, Proceed, appointment steps, payment, or final submit.</p>
                   </div>
                   <div className="portal-profile-row">
                     <label>
@@ -828,8 +917,19 @@ function App() {
                       Autofill portal
                     </button>
                   </div>
-                  <small>Log in or pass CAPTCHA/OTP manually if the portal asks. Autofill watches up to 5 minutes across multi-page forms and fills the real form page automatically when it appears. Password, CAPTCHA, OTP, payment, and final submit are never filled or clicked automatically. Supported default browsers: Chrome, Edge, or Brave.</small>
+                  <small>Log in or pass CAPTCHA/OTP manually if the portal asks. Autofill fills only the current page, then waits for you to manually move through the portal. Password, CAPTCHA, OTP, Next, Proceed, appointment, payment, and final submit are never filled or clicked automatically. Supported default browsers: Chrome, Edge, or Brave.</small>
                   {portalResult && <p className="success">{portalResult}</p>}
+                  {portalReport?.status && portalReport.status !== "missing" && (
+                    <div className="report-box">
+                      <p><strong>Portal completion:</strong> {portalReport.completion_percent ?? 0}%</p>
+                      <p><strong>Fields found:</strong> {portalReport.found_count ?? 0} | <strong>filled:</strong> {portalReport.filled_count ?? 0} | <strong>failed:</strong> {portalReport.failed_count ?? 0}</p>
+                      <p><strong>Dropdown failures:</strong> {portalReport.dropdown_failures?.length || 0} | <strong>Date failures:</strong> {portalReport.date_failures?.length || 0}</p>
+                      <button className="secondary" onClick={refreshPortalReport}>Refresh portal report</button>
+                    </div>
+                  )}
+                  {portalReport?.status === "missing" && (
+                    <button className="secondary" onClick={refreshPortalReport}>Check latest portal report</button>
+                  )}
                 </div>
                 {error && <p className="error">{error}</p>}
               </section>

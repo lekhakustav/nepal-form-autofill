@@ -22,3 +22,5 @@ GEMINI_MODEL=gemini-3.5-flash
 The `/api/extract` endpoint is passport-only in this build. Send repeated `files` form-data entries plus `form_type=passport`; the backend forwards the document packet to Gemini and returns one reviewed applicant profile.
 
 Google Vision OCR is not part of the intended flow. Uploaded files are processed in memory and are not stored permanently by this backend.
+
+Portal autofill is a local browser flow, not a server-side submission bot. It fills safe visible fields in a local Chrome, Edge, or Brave profile and leaves login, CAPTCHA, OTP, payment, and final submit to the user.

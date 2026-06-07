@@ -19,6 +19,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from backend.nepal_normalization import normalize_profile
+
 try:
     import google.generativeai as genai
 except ImportError:  # pragma: no cover
@@ -140,6 +142,9 @@ The files may include Nepali citizenship, NID, previous passport, supporting ide
 Use exact visible values whenever possible. Combine data across all files.
 Normalize dates exactly as visible when you cannot confidently convert between B.S. and A.D.
 Focus on the values needed to autofill the Nepal ePassport online pre-enrollment form.
+Keep english-name fields in Latin script when the source shows Latin text. For full_name_english, father_name, mother_name, spouse_name, birth_place, and issued_district, do not place Devanagari there unless no Latin version is visible.
+Return the most complete passport-related profile you can from the packet. Include province, nationality, marital_status, occupation, issue_place, citizenship_issue_district, permanent_address, temporary_address, contact details, and any other visible passport-relevant field.
+Also include field_confidence as a JSON object with scores between 0 and 1, and validation_warnings as a list of short notes when a field is uncertain or inferred.
 Return this shape:
 {
   "id_type": "CITIZENSHIP" or "NID",
@@ -147,10 +152,16 @@ Return this shape:
   "full_name_english": string or null,
   "date_of_birth": string or null,
   "gender": string or null,
+  "nationality": string or null,
+  "marital_status": string or null,
+  "province": string or null,
   "permanent_address": {"district": string or null, "municipality": string or null, "ward": string or null},
+  "temporary_address": {"district": string or null, "municipality": string or null, "ward": string or null},
   "citizenship_number": string or null,
   "nid_number": string or null,
   "issued_district": string or null,
+  "citizenship_issue_district": string or null,
+  "issue_place": string or null,
   "issued_date": string or null,
   "expiry_date": string or null,
   "father_name": string or null,
@@ -162,14 +173,18 @@ Return this shape:
   "application_type": string or null,
   "birth_place": string or null,
   "old_passport_number": string or null,
+  "occupation": string or null,
   "phone": string or null,
   "email": string or null,
+  "field_confidence": object or null,
+  "validation_warnings": array or null,
   "raw_text": string or null
 }
 Return only JSON. Do not invent missing values."""
 
 gemini_requests = deque()
 USAGE_LOG_PATH = Path(__file__).resolve().parent / "usage-log.json"
+PORTAL_REPORT_PATH = Path(__file__).resolve().parent.parent / "portal-fill-report.json"
 MAX_UPLOAD_FILES = 6
 MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_PACKET_BYTES = 32 * 1024 * 1024
@@ -317,14 +332,21 @@ def safe_ai_error_message(exc: Exception, fallback: str) -> str:
     return fallback
 
 
-def enforce_gemini_rate_limit() -> None:
+def trim_gemini_rate_window() -> None:
     now = time.time()
     while gemini_requests and now - gemini_requests[0] > 60:
         gemini_requests.popleft()
+
+
+def gemini_rate_limit_exceeded() -> bool:
+    trim_gemini_rate_window()
     rpm_limit = int_env("GEMINI_REQUESTS_PER_MINUTE", DEFAULT_GEMINI_RPM, 1, MAX_GEMINI_RPM)
-    if len(gemini_requests) >= rpm_limit:
-        raise HTTPException(status_code=429, detail="Gemini rate limit reached. Please wait a minute and try again.")
-    gemini_requests.append(now)
+    return len(gemini_requests) >= rpm_limit
+
+
+def note_gemini_call() -> None:
+    trim_gemini_rate_window()
+    gemini_requests.append(time.time())
 
 
 def gemini_api_key() -> str | None:
@@ -368,7 +390,7 @@ def demo_data_enabled() -> bool:
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
-        return "\n".join(page.extract_text() or "" for page in reader.pages[:5]).strip()
+        return "\n".join(page.extract_text() or "" for page in reader.pages).strip()
     except Exception:
         return ""
 
@@ -394,7 +416,7 @@ def pdf_page_images_for_ai(file_bytes: bytes) -> list[dict[str, Any]]:
     pdf = None
     try:
         pdf = fitz.open(stream=file_bytes, filetype="pdf")
-        for page in pdf[:3]:
+        for page in pdf:
             pixmap = page.get_pixmap(matrix=fitz.Matrix(1.7, 1.7), alpha=False)
             image_bytes = pixmap.tobytes("jpeg", jpg_quality=84)
             parts.append({"mime_type": "image/jpeg", "data": image_bytes})
@@ -434,7 +456,8 @@ def extract_with_gemini_passport_packet(uploaded_files: list[dict[str, Any]]) ->
     if not api_key:
         raise HTTPException(status_code=500, detail="Add GEMINI_API_KEY to backend/.env to extract passport details from photos and PDFs.")
 
-    enforce_gemini_rate_limit()
+    if gemini_rate_limit_exceeded():
+        raise HTTPException(status_code=429, detail="Gemini minute limit reached. Please wait a minute and try again.")
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(gemini_model_name())
@@ -452,6 +475,7 @@ def extract_with_gemini_passport_packet(uploaded_files: list[dict[str, Any]]) ->
             parts,
             generation_config={"temperature": 0, "response_mime_type": "application/json"},
         )
+        note_gemini_call()
         record_usage(
             "gemini_call",
             model=gemini_model_name(),
@@ -482,11 +506,13 @@ def gemini_generate(prompt: str, raw_text: str) -> str:
         if "Return only 'CITIZENSHIP'" in prompt:
             return heuristic_detect_id_type(raw_text)
         return json.dumps(heuristic_extract_json(raw_text, "NID" if "NID" in prompt else "CITIZENSHIP"), ensure_ascii=False)
-    enforce_gemini_rate_limit()
+    if gemini_rate_limit_exceeded():
+        raise HTTPException(status_code=429, detail="Gemini minute limit reached. Please wait a minute and try again.")
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(gemini_model_name())
         response = model.generate_content(f"{prompt}\n\nRAW OCR TEXT:\n{raw_text}")
+        note_gemini_call()
         record_usage("gemini_call", model=gemini_model_name(), source="text_parse", **response_usage_metadata(response))
         return response.text.strip()
     except Exception as exc:
@@ -585,19 +611,36 @@ def heuristic_extract_json(raw_text: str, id_type: str) -> dict[str, Any]:
     gender = find_after_label(raw_text, ["Gender", "Sex", "लिङ्ग"])
     address_line = find_after_label(raw_text, ["Permanent Address", "Address", "ठेगाना"])
     district = find_after_label(raw_text, ["District", "जिल्ला"])
+    province = find_after_label(raw_text, ["Province", "State", "प्रदेश"])
+    nationality = find_after_label(raw_text, ["Nationality", "Nationality / Citizenship", "Citizenship", "Citizen"])
+    marital_status = find_after_label(raw_text, ["Marital Status", "Married", "Single", "Unmarried"])
+    occupation = find_after_label(raw_text, ["Occupation", "Profession", "Job"])
+    issue_place = find_after_label(raw_text, ["Issue Place", "Place of Issue", "Issued Place"])
+    issue_district = find_after_label(raw_text, ["Issued District", "Issue District", "Citizenship Issue District"])
+    temp_address = find_after_label(raw_text, ["Temporary Address", "Present Address", "Current Address"])
     return {
         "full_name_nepali": find_after_label(raw_text, ["नाम"]),
         "full_name_english": find_after_label(raw_text, ["Name", "Full Name"]),
         "date_of_birth": dob_match.group(0) if dob_match else find_after_label(raw_text, ["Date of Birth", "DOB", "जन्म मिति"]),
         "gender": gender,
+        "nationality": nationality,
+        "marital_status": marital_status,
+        "province": province,
         "permanent_address": {
             "district": district or address_line,
             "municipality": find_after_label(raw_text, ["Municipality", "पालिका"]),
             "ward": find_after_label(raw_text, ["Ward", "वडा"]),
         },
+        "temporary_address": {
+            "district": temp_address,
+            "municipality": find_after_label(raw_text, ["Temporary Municipality", "Current Municipality", "Present Municipality"]),
+            "ward": find_after_label(raw_text, ["Temporary Ward", "Current Ward", "Present Ward"]),
+        },
         "citizenship_number": number_match.group(0) if id_type == "CITIZENSHIP" and number_match else None,
         "nid_number": number_match.group(0) if id_type == "NID" and number_match else None,
-        "issued_district": find_after_label(raw_text, ["Issued District", "Issue District", "जारी जिल्ला"]),
+        "issued_district": issue_district,
+        "citizenship_issue_district": issue_district,
+        "issue_place": issue_place,
         "issued_date": find_after_label(raw_text, ["Issued Date", "Issue Date", "जारी मिति"]),
         "expiry_date": find_after_label(raw_text, ["Expiry Date", "Expiration Date", "Valid Until", "मान्य मिति"]),
         "father_name": find_after_label(raw_text, ["Father's Name", "Father Name", "बुबाको नाम"]),
@@ -605,26 +648,38 @@ def heuristic_extract_json(raw_text: str, id_type: str) -> dict[str, Any]:
         "grandfather_name": find_after_label(raw_text, ["Grandfather's Name", "Grandfather Name", "हजुरबुबाको नाम"]),
         "spouse_name": find_after_label(raw_text, ["Spouse Name", "Husband Name", "Wife Name", "पति", "पत्नी"]),
         "blood_group": find_after_label(raw_text, ["Blood Group", "रक्त समूह"]),
+        "occupation": occupation,
     }
 
 
 def unified_master(id_type: str, data: dict[str, Any]) -> dict[str, Any]:
     data = standard_digits(data)
     address = data.get("permanent_address") or {}
+    temporary_address = data.get("temporary_address") or {}
     return standard_digits({
         "full_name_english": data.get("full_name_english"),
         "full_name_nepali": data.get("full_name_nepali"),
         "date_of_birth": data.get("date_of_birth"),
         "gender": data.get("gender"),
+        "nationality": data.get("nationality"),
+        "marital_status": data.get("marital_status"),
+        "province": data.get("province"),
         "permanent_address": {
             "district": address.get("district"),
             "municipality": address.get("municipality"),
             "ward": address.get("ward"),
         },
+        "temporary_address": {
+            "district": temporary_address.get("district"),
+            "municipality": temporary_address.get("municipality"),
+            "ward": temporary_address.get("ward"),
+        },
         "citizenship_number": data.get("citizenship_number") if id_type == "CITIZENSHIP" else None,
         "nid_number": data.get("nid_number") if id_type == "NID" else None,
         "id_type": id_type,
         "issued_district": data.get("issued_district"),
+        "citizenship_issue_district": data.get("citizenship_issue_district") or data.get("issued_district"),
+        "issue_place": data.get("issue_place"),
         "issued_date": data.get("issued_date"),
         "expiry_date": data.get("expiry_date"),
         "father_name": data.get("father_name"),
@@ -636,8 +691,10 @@ def unified_master(id_type: str, data: dict[str, Any]) -> dict[str, Any]:
         "application_type": data.get("application_type"),
         "birth_place": data.get("birth_place"),
         "old_passport_number": data.get("old_passport_number"),
+        "occupation": data.get("occupation"),
         "phone": data.get("phone"),
         "email": data.get("email"),
+        "raw_text": data.get("raw_text"),
     })
 
 
@@ -737,7 +794,8 @@ async def extract(files: list[UploadFile] = File(...), form_type: str = Form(...
     extracted = extract_with_gemini_passport_packet(uploaded_files)
     id_type = normalize_id_type(extracted.get("id_type") or "")
     master = unified_master(id_type, extracted)
-    return {"id_type": id_type, "master_data": master}
+    normalized_master = normalize_profile(master, extracted, id_type)
+    return {"id_type": id_type, "master_data": normalized_master}
 
 
 @app.post("/api/pdf")
@@ -820,8 +878,18 @@ def portal_autofill(payload: PortalAutofillRequest) -> dict[str, Any]:
     return {
         "status": "started",
         "filled_count": None,
-        "message": "Your selected portal browser profile opened. Complete login, CAPTCHA, OTP, or location manually if needed. Autofill will watch for up to 5 minutes and fill safe visible fields across form pages as they appear. Review before submitting anything.",
+        "message": "Your selected portal browser profile opened. Autofill stays on the current page only, fills safe visible fields after OCR is ready, and never clicks Next, Proceed, appointment steps, payment, or final submit. Complete login, CAPTCHA, OTP, and all page navigation manually.",
     }
+
+
+@app.get("/api/portal/report")
+def portal_report() -> dict[str, Any]:
+    if not PORTAL_REPORT_PATH.exists():
+        return {"status": "missing"}
+    try:
+        return json.loads(PORTAL_REPORT_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(status_code=500, detail="Could not read the latest portal autofill report.")
 
 
 def mock_ocr_text() -> str:
