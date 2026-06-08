@@ -361,6 +361,18 @@ function applyMasterToForm(formId, master) {
   return { initialValues, sourceMap, reviewMap };
 }
 
+function buildPortalMetadata(formValues, autoFields, masterData) {
+  const confidenceMap = { ...(masterData?.field_confidence || {}) };
+  const sourceMap = { ...(masterData?.field_sources || {}) };
+  Object.entries(formValues || {}).forEach(([field, value]) => {
+    if (!String(value || "").trim()) return;
+    if (autoFields?.[field]) return;
+    confidenceMap[field] = 1;
+    sourceMap[field] = "manual";
+  });
+  return { confidenceMap, sourceMap };
+}
+
 function formatNumber(value) {
   return new Intl.NumberFormat("en").format(Number(value || 0));
 }
@@ -446,7 +458,7 @@ function App() {
   const debugRows = Object.entries(debugTrace).map(([field, meta]) => ({ field, ...(meta || {}) }));
   const reviewRequiredFields = fields.filter((field) => {
     const confidence = Number(fieldConfidence[field]);
-    return Number.isFinite(confidence) && confidence > 0 && confidence < HIGH_CONFIDENCE_THRESHOLD;
+    return Number.isFinite(confidence) && confidence > 0 && confidence < HIGH_CONFIDENCE_THRESHOLD && !String(formValues[field] || "").trim();
   });
 
   useEffect(() => {
@@ -585,6 +597,7 @@ function App() {
     setPortalResult("");
     setPortalLoading(true);
     try {
+      const portalMetadata = buildPortalMetadata(formValues, autoFields, masterData);
       const response = await fetch(`${API_BASE}/api/portal/autofill`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -595,8 +608,8 @@ function App() {
           browser_profile: portalProfile,
           values: {
             ...formValues,
-            field_confidence: masterData?.field_confidence || {},
-            field_sources: masterData?.field_sources || {},
+            field_confidence: portalMetadata.confidenceMap,
+            field_sources: portalMetadata.sourceMap,
             ...(selectedForm === "passport" && passportReference.trim()
               ? { passport_reference: passportReference.trim(), application_reference: passportReference.trim() }
               : {})
@@ -866,24 +879,26 @@ function App() {
                         const auto = autoFields[field];
                         const confidence = Number(fieldConfidence[field]);
                         const hasConfidence = Number.isFinite(confidence) && confidence > 0;
-                        const reviewRequired = !auto && hasConfidence && confidence < HIGH_CONFIDENCE_THRESHOLD;
+                        const reviewRequired = !filled && hasConfidence && confidence < HIGH_CONFIDENCE_THRESHOLD;
                         const confidenceLabel = formatConfidenceScore(confidence);
                         const fieldStatus = auto
                           ? `Auto-filled${confidenceLabel ? ` • ${confidenceLabel}` : ""}`
                           : reviewRequired
                             ? `Left blank for review${confidenceLabel ? ` • ${confidenceLabel}` : ""}`
-                            : "Please fill manually";
+                            : filled
+                              ? "Filled manually"
+                              : "Please fill manually";
                         return (
                           <label className={`sheet-cell ${filled ? "filled" : "empty"} ${auto ? "auto" : reviewRequired ? "review" : "manual"}`} key={field}>
                             <span className="label-line">{label[0]} <em>{label[1]}</em></span>
-                            <input
-                              value={formValues[field] || ""}
-                              onChange={(event) => {
-                                const value = event.target.value;
-                                setFormValues((current) => ({ ...current, [field]: value }));
-                                setAutoFields((current) => ({ ...current, [field]: current[field] && Boolean(value) }));
-                              }}
-                            />
+                          <input
+                            value={formValues[field] || ""}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setFormValues((current) => ({ ...current, [field]: value }));
+                              setAutoFields((current) => ({ ...current, [field]: false }));
+                            }}
+                          />
                             <small>{auto ? `${fillSource}${confidenceLabel ? ` • ${confidenceLabel}` : ""}` : fieldStatus}</small>
                           </label>
                         );

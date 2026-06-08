@@ -41,6 +41,13 @@ const FIELD_CONFIDENCE_THRESHOLD = {
   dropdown: 0.99,
   date: 0.99
 };
+const NON_FIELD_KEYS = new Set([
+  "field_confidence",
+  "field_sources",
+  "validation_warnings",
+  "raw_text",
+  "id_type"
+]);
 
 function keyOf(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
@@ -505,8 +512,10 @@ function optionTerms(key, value) {
     if (normalized.includes("ordinary")) terms.push("ordinary");
   }
   if (key === "application_type") {
-    if (normalized.includes("new")) terms.push("new", "fresh", "first time", "apply");
-    if (normalized.includes("renew")) terms.push("renewal", "renew", "reissue");
+    if (/^new(\s|$)/.test(normalized) || normalized.includes("fresh") || normalized.includes("first time")) {
+      terms.push("new", "fresh", "first time", "apply");
+    }
+    if (/renew|reissue/.test(normalized)) terms.push("renewal", "renew", "reissue");
   }
   return [...new Set(terms.filter(Boolean))];
 }
@@ -555,6 +564,13 @@ function commandOutput(command) {
 
 function existingPath(candidates) {
   return candidates.find((candidate) => candidate && fs.existsSync(candidate));
+}
+
+function macBrowserCandidates(bundleName, executableName) {
+  return [
+    path.join("/Applications", `${bundleName}.app`, "Contents", "MacOS", executableName),
+    path.join(os.homedir(), "Applications", `${bundleName}.app`, "Contents", "MacOS", executableName)
+  ];
 }
 
 function windowsDefaultBrowserProgId() {
@@ -606,11 +622,17 @@ function preferredBrowserExecutable() {
     browserExecutableFromProgId(windowsDefaultBrowserProgId()) ||
     existingPath([
       process.env.CHROME_PATH,
+      ...macBrowserCandidates("Google Chrome", "Google Chrome"),
       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
       "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
       process.env.EDGE_PATH,
+      ...macBrowserCandidates("Microsoft Edge", "Microsoft Edge"),
       "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      process.env.BRAVE_PATH,
+      ...macBrowserCandidates("Brave Browser", "Brave Browser"),
+      "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+      "C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
     ])
   );
 }
@@ -669,6 +691,7 @@ function findMatches(inputs, values) {
   const expanded = expandValues(values);
   for (const [key, value] of Object.entries(expanded)) {
     if (!value) continue;
+    if (NON_FIELD_KEYS.has(String(key).toLowerCase())) continue;
     if (String(key).startsWith("appointment_")) {
       skipped.push({ key, reason: "appointment_manual" });
       continue;
@@ -1079,6 +1102,43 @@ async function selectVisibleOption(page, selectors, value) {
   return false;
 }
 
+async function readFieldSnapshot(locator) {
+  return locator.evaluate((node) => {
+    const extract = (value) => String(value || "").trim().slice(0, 240);
+    if (node instanceof HTMLInputElement) {
+      return {
+        value: extract(node.value),
+        checked: Boolean(node.checked),
+        type: extract(node.type),
+        text: extract(node.value || node.getAttribute("value") || node.getAttribute("aria-label") || node.placeholder || "")
+      };
+    }
+    if (node instanceof HTMLTextAreaElement) {
+      return {
+        value: extract(node.value),
+        checked: false,
+        type: "textarea",
+        text: extract(node.value || node.getAttribute("aria-label") || node.placeholder || "")
+      };
+    }
+    if (node instanceof HTMLSelectElement) {
+      const selected = node.options[node.selectedIndex];
+      return {
+        value: extract(node.value || selected?.value || ""),
+        checked: false,
+        type: "select",
+        text: extract(selected?.textContent || selected?.label || selected?.value || node.textContent || "")
+      };
+    }
+    return {
+      value: extract(node.getAttribute?.("value") || node.textContent || node.innerText || ""),
+      checked: false,
+      type: extract(node.tagName || ""),
+      text: extract(node.innerText || node.textContent || "")
+    };
+  }).catch(() => ({ value: "", checked: false, type: "", text: "" }));
+}
+
 async function fillSelect(locator, key, value) {
   const normalizedValue = isDateKey(key) ? normalizeDateForInput(value) : normalizeValue(value);
   const options = await locator.evaluate((node) => {
@@ -1123,7 +1183,7 @@ async function waitForDropdownOptions(page, timeoutMs = 2500) {
 async function openDropdown(locator) {
   const clicked = await locator.click({ timeout: 1200 }).then(() => true).catch(() => false);
   if (clicked) return true;
-  return locator.press("Space", { timeoutMs: 1200 }).then(() => true).catch(() => false);
+  return locator.press("Space", { timeout: 1200 }).then(() => true).catch(() => false);
 }
 
 async function selectDropdownOption(page, locator, key, value) {
@@ -1134,14 +1194,14 @@ async function selectDropdownOption(page, locator, key, value) {
   for (let index = 0; index < Math.min(count, 50); index += 1) {
     const option = optionLocator.nth(index);
     if (!(await option.isVisible().catch(() => false))) continue;
-    const text = normalizeValue(await option.innerText({ timeoutMs: 700 }).catch(() => option.textContent({ timeoutMs: 700 }).catch(() => "")));
+    const text = normalizeValue(await option.innerText({ timeout: 700 }).catch(() => option.textContent({ timeout: 700 }).catch(() => "")));
     if (!text) continue;
     const match = dropdownMatchInfo(key, value, text);
     if (match.matched && (match.exact || match.score >= 0.98)) {
       const clicked = await option.click({ timeout: 1200 }).then(() => true).catch(() => false);
       if (!clicked) return false;
       await sleep(350);
-      const selectedText = await locator.innerText({ timeoutMs: 700 }).catch(() => "");
+      const selectedText = await locator.innerText({ timeout: 700 }).catch(() => "");
       const normalizedSelected = normalizeValue(selectedText);
       const normalizedValue = normalizeValue(value);
       return Boolean(normalizedSelected && (normalizedSelected === normalizedValue || normalizedSelected.includes(normalizedValue) || normalizedValue.includes(normalizedSelected)));
@@ -1162,7 +1222,7 @@ async function fillDropdown(page, locator, key, value) {
     if (currentSelected && currentMatch.matched && currentMatch.exact) return true;
     return fillSelect(locator, key, value);
   }
-  const currentText = await locator.innerText({ timeoutMs: 700 }).catch(() => "");
+  const currentText = await locator.innerText({ timeout: 700 }).catch(() => "");
   const currentMatch = dropdownMatchInfo(key, value, currentText);
   if (normalizeValue(currentText) && currentMatch.matched && currentMatch.exact) return true;
   const opened = await openDropdown(locator);
@@ -1288,16 +1348,23 @@ async function fillTextOrDate(page, locator, key, value, inputMeta = {}) {
   return false;
 }
 
-async function fillPage(page, values, filledTargets) {
+async function fillPage(page, values, filledTargets, seenEvents = new Set()) {
   const inputs = await readInputs(page);
   const matchResult = findMatches(inputs, values);
+  const fieldEvents = [];
   for (const skipped of matchResult.skipped || []) {
-    logEvent("info", "field_skipped", {
+    const fingerprint = [page.url(), "skip", skipped.key, skipped.reason, skipped.confidence ?? ""].join("|");
+    if (seenEvents.has(fingerprint)) continue;
+    seenEvents.add(fingerprint);
+    const event = {
+      action: "skip",
       key: skipped.key,
       reason: skipped.reason,
       confidence: skipped.confidence ?? null,
       url: page.url()
-    });
+    };
+    fieldEvents.push(event);
+    logEvent("info", "field_skipped", event);
   }
   const matches = matchResult.matches.sort((left, right) => {
     const priority = {
@@ -1340,35 +1407,45 @@ async function fillPage(page, values, filledTargets) {
     if (filledTargets.has(signature) || isSensitiveInput(best)) continue;
     const locator = inputLocator.nth(best.index);
     try {
+      const before = await readFieldSnapshot(locator);
       const alreadyFilled = await isFieldManuallyFilled(locator, best.kind || best.tag || "").catch(() => false);
       if (alreadyFilled) {
-        skipped.push({
+        const event = {
+          action: "skip",
           key: best.key,
           reason: "already_has_value",
           matched: best.name || best.id || best.placeholder || best.label || "",
+          stimulus: best.value,
+          before,
           url: page.url()
-        });
-        logEvent("info", "skipping_manual_value", {
-          key: best.key,
-          matched: best.name || best.id || best.placeholder || best.label || "",
-          url: page.url()
-        });
+        };
+        const fingerprint = [page.url(), "skip", best.key, event.reason, best.value, event.matched].join("|");
+        if (!seenEvents.has(fingerprint)) {
+          seenEvents.add(fingerprint);
+          skipped.push(event);
+          fieldEvents.push(event);
+          logEvent("info", "skipping_manual_value", event);
+        }
         continue;
       }
       if (!hasSufficientFieldConfidence(values, best.key, best)) {
-        skipped.push({
+        const event = {
+          action: "skip",
           key: best.key,
           reason: "control_requires_higher_confidence",
           confidence: getFieldConfidence(values, best.key),
           matched: best.name || best.id || best.placeholder || best.label || "",
+          stimulus: best.value,
+          before,
           url: page.url()
-        });
-        logEvent("warn", "skipping_low_confidence", {
-          key: best.key,
-          confidence: getFieldConfidence(values, best.key),
-          matched: best.name || best.id || best.placeholder || best.label || "",
-          url: page.url()
-        });
+        };
+        const fingerprint = [page.url(), "skip", best.key, event.reason, best.value, event.matched].join("|");
+        if (!seenEvents.has(fingerprint)) {
+          seenEvents.add(fingerprint);
+          skipped.push(event);
+          fieldEvents.push(event);
+          logEvent("warn", "skipping_low_confidence", event);
+        }
         continue;
       }
       let didFill = false;
@@ -1381,57 +1458,93 @@ async function fillPage(page, values, filledTargets) {
       }
       if (!didFill) {
         const warning = {
+          action: "fail",
           key: best.key,
           value: best.value,
           matched: best.name || best.id || best.placeholder || best.label,
           kind: best.kind || best.tag || "",
+          stimulus: best.value,
+          before,
           url: page.url()
         };
-        failed.push(warning);
-        logEvent("warn", "field_not_filled", warning);
+        const fingerprint = [page.url(), "fail", best.key, best.value, warning.matched, warning.kind].join("|");
+        if (!seenEvents.has(fingerprint)) {
+          seenEvents.add(fingerprint);
+          failed.push(warning);
+          fieldEvents.push(warning);
+          logEvent("warn", "field_not_filled", warning);
+        }
         continue;
       }
       filledTargets.add(signature);
-      const entry = { key: best.key, value: best.value, matched: best.name || best.id || best.placeholder || best.label, url: page.url() };
-      filled.push(entry);
-      logEvent("success", "field_filled", {
-        key: best.key,
-        matched: entry.matched,
-        value: best.value,
-        url: page.url()
-      });
-      await sleep(350);
-    } catch {
-      const failure = {
+      const after = await readFieldSnapshot(locator);
+      const entry = {
+        action: "fill",
         key: best.key,
         value: best.value,
         matched: best.name || best.id || best.placeholder || best.label,
         kind: best.kind || best.tag || "",
+        stimulus: best.value,
+        before,
+        after,
         url: page.url()
       };
-      failed.push(failure);
-      logEvent("error", "field_fill_failed", failure);
+      filled.push(entry);
+      const fingerprint = [page.url(), "fill", best.key, best.value, entry.matched, entry.kind].join("|");
+      if (!seenEvents.has(fingerprint)) {
+        seenEvents.add(fingerprint);
+        fieldEvents.push(entry);
+        logEvent("success", "field_filled", {
+          key: best.key,
+          matched: entry.matched,
+          value: best.value,
+          before,
+          after,
+          url: page.url()
+        });
+      }
+      await sleep(350);
+    } catch {
+      const failure = {
+        action: "fail",
+        key: best.key,
+        value: best.value,
+        matched: best.name || best.id || best.placeholder || best.label,
+        kind: best.kind || best.tag || "",
+        stimulus: best.value,
+        url: page.url()
+      };
+      const fingerprint = [page.url(), "fail", best.key, best.value, failure.matched, failure.kind].join("|");
+      if (!seenEvents.has(fingerprint)) {
+        seenEvents.add(fingerprint);
+        failed.push(failure);
+        fieldEvents.push(failure);
+        logEvent("error", "field_fill_failed", failure);
+      }
     }
   }
 
-  return { filled, failed, skipped };
+  return { filled, failed, skipped, fieldEvents };
 }
 
 async function watchAndFillPortal(context, values, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   const filledTargets = new Set();
+  const seenEvents = new Set();
   const filled = [];
   const failed = [];
   const skipped = [];
+  const fieldEvents = [];
 
   while (Date.now() < deadline) {
     for (const page of context.pages()) {
       try {
         if (page.isClosed()) continue;
-        const pageResult = await fillPage(page, values, filledTargets);
+        const pageResult = await fillPage(page, values, filledTargets, seenEvents);
         filled.push(...pageResult.filled);
         failed.push(...pageResult.failed);
         skipped.push(...(pageResult.skipped || []));
+        fieldEvents.push(...(pageResult.fieldEvents || []));
       } catch {
         // Pages can navigate, reload, or close between checks. Keep watching.
       }
@@ -1439,7 +1552,7 @@ async function watchAndFillPortal(context, values, timeoutMs) {
     await sleep(900);
   }
 
-  return { filled, failed, skipped };
+  return { filled, failed, skipped, fieldEvents };
 }
 
 async function main() {
@@ -1471,6 +1584,7 @@ async function main() {
     const filled = result.filled || [];
     const failed = result.failed || [];
     const skipped = result.skipped || [];
+    const fieldEvents = result.fieldEvents || [];
     const dropdownFailures = failed.filter((entry) => ["mat-select", "listbox", "combobox", "select"].includes(String(entry.kind || "").toLowerCase()));
     const dateFailures = failed.filter((entry) => isDateKey(entry.key));
     const foundCount = filled.length + failed.length;
@@ -1493,9 +1607,11 @@ async function main() {
       filled,
       failed,
       skipped,
+      field_events: fieldEvents,
       dropdown_failures: dropdownFailures,
       date_failures: dateFailures,
       log_count: runLogs.length,
+      field_event_count: fieldEvents.length,
       logs: runLogs,
       note: filled.length
         ? "Autofill watched the connected browser and filled only high-confidence safe fields across available form pages. Review each page before continuing or submitting."

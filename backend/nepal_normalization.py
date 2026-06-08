@@ -662,7 +662,7 @@ def normalize_profile(master: dict[str, Any], raw_extracted: dict[str, Any] | No
     warnings: list[str] = []
 
     for key, value in list(profile.items()):
-        if key == "id_type" or key.startswith("field_") or key in {"validation_warnings", "unmatched_fields", "debug_trace"}:
+        if key == "id_type" or key == "raw_text" or key.startswith("field_") or key in {"validation_warnings", "unmatched_fields", "debug_trace"}:
             continue
         final, meta = normalize_field(key, value, raw_extracted)
         meta = apply_raw_confidence(key, meta, raw_extracted)

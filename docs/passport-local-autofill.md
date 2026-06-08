@@ -9,6 +9,7 @@ This build is intentionally passport-only. The local app should turn a packet of
 - Only extracted fields at or above the confidence cutoff are auto-filled into the review form.
 - Lower-confidence fields stay blank on purpose so the user can inspect and enter them manually.
 - The UI surfaces `field_confidence` and `validation_warnings` when Gemini provides them, so review-required states are visible before any portal work starts.
+- If the reviewer edits a field in the form, the portal payload treats that value as manually confirmed instead of keeping the original low-confidence source metadata.
 - The portal flow is page-local only: the user manually moves through pages, completes login/CAPTCHA/OTP, and handles appointment booking, payment, and final submit.
 - Current cutoff in the React client is 95 percent, matching the safe-fill behavior used elsewhere in the portal automation path.
 
@@ -34,10 +35,12 @@ This build is intentionally passport-only. The local app should turn a packet of
 
 - `POST /api/portal/autofill` starts `scripts/portal-fill.js`.
 - The script uses Playwright with a persistent local Chrome/Edge/Brave profile.
+- Browser discovery checks the common macOS app bundle paths as well as the Windows install locations, so local Chrome/Edge/Brave installs are found on this machine class too.
 - The user handles login, CAPTCHA, OTP, payment, appointment booking, page navigation, and final submit manually.
 - The script may fill text inputs, selects, radio buttons, checkboxes/tick questions, and date widgets when labels match reviewed applicant values.
 - The script intentionally skips fields below the confidence threshold instead of guessing.
 - Gender, application type, passport type, DOB, issued date, and expiry date should be treated as first-class portal-fill cases.
+- `portal-fill-report.json` now carries per-field `field_events` plus before/after snapshots for fills and skips so reviewers can see the stimulus, the matched control, and the resulting state without replaying the browser session.
 
 ## Safety Boundary
 
